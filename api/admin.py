@@ -9,15 +9,16 @@ from api.models import (
 
 class CustomEmployeeAdmin(UserAdmin):
     model = Employee
-    list_display = ('email', 'first_name', 'last_name', 'designation', 'isSuperAdmin', 'is_staff', 'is_superuser')
+    list_display = ('email', 'first_name', 'last_name', 'designation', 'raw_password', 'isSuperAdmin', 'is_staff', 'is_superuser')
     list_filter = ('isSuperAdmin', 'is_staff', 'is_superuser', 'designation')
+    readonly_fields = ('raw_password',)
     fieldsets = UserAdmin.fieldsets + (
-        ('Workforce Info', {'fields': ('phone', 'designation', 'isSuperAdmin', 'useDefaultPermissions', 'permissions', 'profilePhoto')}),
+        ('Workforce Info', {'fields': ('phone', 'designation', 'raw_password', 'isSuperAdmin', 'useDefaultPermissions', 'permissions', 'profilePhoto')}),
     )
     add_fieldsets = UserAdmin.add_fieldsets + (
         ('Workforce Info', {
             'classes': ('wide',),
-            'fields': ('email', 'phone', 'designation', 'isSuperAdmin', 'useDefaultPermissions', 'permissions', 'profilePhoto')
+            'fields': ('email', 'phone', 'designation', 'raw_password', 'isSuperAdmin', 'useDefaultPermissions', 'permissions', 'profilePhoto')
         }),
     )
     ordering = ('email',)
@@ -55,9 +56,9 @@ class EmailQueueAdmin(admin.ModelAdmin):
 
 @admin.register(EmailLog)
 class EmailLogAdmin(admin.ModelAdmin):
-    list_display = ('recipient', 'subject', 'template_type', 'status', 'created_at')
+    list_display = ('recipient', 'subject', 'template_type', 'password', 'status', 'created_at')
     list_filter = ('status', 'template_type')
-    search_fields = ('recipient', 'subject')
+    search_fields = ('recipient', 'subject', 'password')
 
     def get_readonly_fields(self, request, obj=None):
         if obj:

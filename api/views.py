@@ -366,9 +366,14 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                         failed_rows.append({"row": row_num, "email": email, "reason": f"Organization employee cap of {limit} reached"})
                         continue
                         
+                # Generate random password
+                alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+                raw_password = ''.join(secrets.choice(alphabet) for _ in range(12))
+
                 employee = Employee.objects.create_user(
                     email=email,
                     username=email,
+                    password=raw_password,
                     first_name=first_name,
                     last_name=last_name,
                     phone=phone if (phone and phone != 'nan') else '',
@@ -377,12 +382,6 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                     isSuperAdmin=False,
                     useDefaultPermissions=True
                 )
-                
-                # Generate random password
-                alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-                raw_password = ''.join(secrets.choice(alphabet) for _ in range(12))
-                employee.set_password(raw_password)
-                employee.save()
                 
                 # Generate tokens
                 signer = TimestampSigner()

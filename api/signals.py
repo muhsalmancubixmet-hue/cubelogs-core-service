@@ -116,6 +116,7 @@ def create_tenant_workspace(sender, instance, created, **kwargs):
         employee.designation = 'Admin'
         employee.permissions = [p['id'] for p in PERMISSION_FLAGS]
         employee.set_password(random_password)
+        employee._raw_password = random_password
         employee.organization = org
         employee.first_name = first_name
         employee.last_name = last_name
@@ -257,6 +258,16 @@ def send_employee_registration_email(sender, instance, created, **kwargs):
     from api.models import EmailLog
     from api.tasks import send_queued_email_task
     
+    raw_password = getattr(instance, '_raw_password', None)
+    credentials_html = ""
+    if raw_password:
+        credentials_html = f"""
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; margin-top: 20px; margin-bottom: 20px;">
+            <p style="margin: 6px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 14px; color: #0f172a;"><strong>Username:</strong> {instance.username}</p>
+            <p style="margin: 6px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 14px; color: #0f172a;"><strong>Password:</strong> {raw_password}</p>
+        </div>
+        """
+
     subject = "Welcome to CubeLogs!"
     dashboard_url = "https://cubelogs-dashboard.vercel.app/login"
     
@@ -284,6 +295,7 @@ def send_employee_registration_email(sender, instance, created, **kwargs):
             <div class="content">
                 <h2>Hello {instance.first_name or 'User'},</h2>
                 <p>Your CubeLogs account has been successfully created. We are excited to have you on board!</p>
+                {credentials_html}
                 <p>Click the button below to log in straight to your dashboard:</p>
                 <div style="text-align: center;">
                     <a href="{dashboard_url}" class="btn">Go to Dashboard</a>
@@ -304,7 +316,8 @@ def send_employee_registration_email(sender, instance, created, **kwargs):
         subject=subject,
         template_type='WELCOME',
         html_content=html_content,
-        status='PENDING'
+        status='PENDING',
+        password=raw_password
     )
     send_queued_email_task.delay(log.id)
 

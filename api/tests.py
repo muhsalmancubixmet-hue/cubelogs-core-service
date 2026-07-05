@@ -1341,6 +1341,58 @@ class EmployeeBulkUploadTests(APITestCase):
         # Bob Smith must have been deleted from DB due to SMTP mail error
         self.assertFalse(Employee.objects.filter(email='bob@bulk.com').exists())
 
+    def test_bulk_upload_records_password_in_email_log(self):
+        import pandas as pd
+        import io
+        from api.models import Employee, EmailLog
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        df_data = {
+            'Full Name': ['Alice Green'],
+            'Email Address': ['alice@bulk.com'],
+            'Phone Number': ['1234567890'],
+            'Designation Role(s)': ['Developer']
+        }
+        df = pd.DataFrame(df_data)
+        excel_buffer = io.BytesIO()
+        df.to_excel(excel_buffer, index=False)
+        excel_buffer.seek(0)
+
+        uploaded_file = SimpleUploadedFile(
+            "employees.xlsx",
+            excel_buffer.read(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        url = '/api/employees/bulk-upload/'
+        response = self.client.post(url, {'file': uploaded_file}, format='multipart')
+        self.assertEqual(response.status_code, 200)
+
+        # Check that EmailLog exists for alice@bulk.com with WELCOME type
+        log = EmailLog.objects.filter(recipient='alice@bulk.com', template_type='WELCOME').first()
+        self.assertIsNotNone(log)
+        self.assertIsNotNone(log.password)
+        self.assertTrue(len(log.password) > 0)
+        self.assertIn(log.password, log.html_content)
+
+    def test_employee_raw_password_sync(self):
+        from api.models import Employee
+        
+        # Test creation sets raw_password
+        emp = Employee.objects.create_user(
+            email='test_sync@example.com',
+            password='InitialPassword123'
+        )
+        self.assertEqual(emp.raw_password, 'InitialPassword123')
+        
+        # Test change password updates raw_password
+        emp.set_password('NewPassword456')
+        emp.save()
+        
+        # Reload from DB and verify
+        emp.refresh_from_db()
+        self.assertEqual(emp.raw_password, 'NewPassword456')
+
 
 
 

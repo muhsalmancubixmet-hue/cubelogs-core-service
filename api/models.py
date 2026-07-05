@@ -28,6 +28,7 @@ class EmployeeManager(BaseUserManager):
         extra_fields.setdefault('username', email)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
+        user._raw_password = password
         user.save(using=self._db)
         return user
 
@@ -50,11 +51,16 @@ class Employee(AbstractUser):
     permissions = models.JSONField(default=list, blank=True)
     profilePhoto = models.TextField(blank=True, null=True) # base64
     organization = models.ForeignKey('Organization', null=True, blank=True, on_delete=models.SET_NULL, related_name='employees')
+    raw_password = models.CharField(max_length=255, blank=True, null=True)
 
     objects = EmployeeManager()
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
+
+    def set_password(self, raw_password):
+        super().set_password(raw_password)
+        self.raw_password = raw_password
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}".strip() or self.email
@@ -418,6 +424,7 @@ class EmailLog(models.Model):
     template_type = models.CharField(max_length=20, choices=TEMPLATE_CHOICES)
     html_content = models.TextField()
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='PENDING')
+    password = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
