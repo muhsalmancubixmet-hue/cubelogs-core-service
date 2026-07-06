@@ -403,14 +403,14 @@ class BackofficeTests(APITestCase):
         )
 
     def test_backoffice_html_view_anonymous_redirect(self):
-        url = '/backoffice/'
+        url = '/'
         response = self.client.get(url)
         # Should redirect to admin login
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
         self.assertIn('/backoffice/login/', response.url)
 
     def test_backoffice_html_view_regular_employee_redirect(self):
-        url = '/backoffice/'
+        url = '/'
         self.client.force_login(self.employee)
         response = self.client.get(url)
         # Should redirect to login since they aren't superadmin
@@ -418,7 +418,7 @@ class BackofficeTests(APITestCase):
         self.assertIn('/backoffice/login/', response.url)
 
     def test_backoffice_html_view_superadmin_allowed(self):
-        url = '/backoffice/'
+        url = '/'
         self.client.force_login(self.superadmin)
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)

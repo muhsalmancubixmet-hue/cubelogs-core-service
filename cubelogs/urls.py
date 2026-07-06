@@ -19,6 +19,7 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib.auth import logout
+from django.views.generic import RedirectView
 
 from api.views import backoffice_view, stripe_webhook, backoffice_login_view, backoffice_logout_view
 
@@ -30,7 +31,8 @@ def custom_admin_login(request, extra_context=None):
 urlpatterns = [
     path('admin/login/', custom_admin_login),
     path('admin/', admin.site.urls),
-    path('backoffice/', backoffice_view, name='backoffice'),
+    path('', backoffice_view, name='backoffice'),
+    path('backoffice/', RedirectView.as_view(url='/', permanent=True)),
     path('backoffice/login/', backoffice_login_view, name='backoffice_login'),
     path('backoffice/logout/', backoffice_logout_view, name='backoffice_logout'),
     path('backoffice/stripe-webhook/', stripe_webhook, name='stripe-webhook'),

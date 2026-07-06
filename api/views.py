@@ -1669,7 +1669,7 @@ from django.shortcuts import render, redirect
 
 def backoffice_view(request):
     if not request.user.is_authenticated or not getattr(request.user, 'isSuperAdmin', False):
-        return redirect('/backoffice/login/?next=/backoffice/')
+        return redirect('/backoffice/login/?next=/')
         
     user_perms = getattr(request.user, 'permissions', [])
     if not isinstance(user_perms, list):
@@ -1691,7 +1691,7 @@ from django.contrib.auth import authenticate, login
 
 def backoffice_login_view(request):
     if request.user.is_authenticated and getattr(request.user, 'isSuperAdmin', False):
-        return redirect('/backoffice/')
+        return redirect('/')
         
     error = None
     if request.method == 'POST':
@@ -1710,7 +1710,7 @@ def backoffice_login_view(request):
                     details="User logged in to Backoffice Console."
                 )
                 
-                next_url = request.GET.get('next', '/backoffice/')
+                next_url = request.GET.get('next', '/')
                 return redirect(next_url)
             else:
                 error = "Access denied. Only system operators are authorized to access the Backoffice Console."
