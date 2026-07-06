@@ -109,8 +109,8 @@ def create_tenant_workspace(sender, instance, created, **kwargs):
     if employee:
         employee.email = email
         employee.username = generated_username
-        employee.is_staff = True
-        employee.is_superuser = True
+        employee.is_staff = False
+        employee.is_superuser = False
         employee.isSuperAdmin = True
         employee.useDefaultPermissions = True
         employee.designation = 'Admin'
@@ -130,8 +130,8 @@ def create_tenant_workspace(sender, instance, created, **kwargs):
             first_name=first_name,
             last_name=last_name,
             phone=instance.phone or '',
-            is_staff=True,
-            is_superuser=True,
+            is_staff=False,
+            is_superuser=False,
             isSuperAdmin=True,
             useDefaultPermissions=True,
             designation='Admin',
@@ -160,7 +160,7 @@ def create_tenant_workspace(sender, instance, created, **kwargs):
         login_signer = TimestampSigner(salt='auto-login')
         login_token = login_signer.sign(str(employee.id))
         
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
         login_url = f"{frontend_url}/login"
         magic_login_url = f"{frontend_url}/login/verify?token={login_token}"
         revoke_url = f"{frontend_url}/revoke?token={revoke_token}"
@@ -269,7 +269,7 @@ def send_employee_registration_email(sender, instance, created, **kwargs):
         """
 
     subject = "Welcome to CubeLogs!"
-    dashboard_url = "https://cubelogs-dashboard.vercel.app/login"
+    dashboard_url = f"{getattr(settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')}/login"
     
     html_content = f"""
     <!DOCTYPE html>

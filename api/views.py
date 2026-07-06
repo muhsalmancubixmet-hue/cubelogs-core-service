@@ -390,7 +390,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 login_signer = TimestampSigner(salt='auto-login')
                 login_token = login_signer.sign(str(employee.id))
                 
-                frontend_url = getattr(dj_settings, 'FRONTEND_URL', 'http://localhost:3000')
+                frontend_url = getattr(dj_settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
                 manual_login_url = f"{frontend_url}/login"
                 magic_login_url = f"{frontend_url}/login/verify?token={login_token}"
                 revoke_url = f"{frontend_url}/revoke?token={revoke_token}"
@@ -1216,7 +1216,7 @@ class PasswordResetRequestView(APIView):
         signer = TimestampSigner(salt='password-reset')
         token = signer.sign(str(employee.id))
         
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
         reset_url = f"{frontend_url}/login/reset?token={token}"
         
         subject = 'Reset Your Password - CubeLogs'
@@ -2174,7 +2174,7 @@ class WalletViewSet(viewsets.ModelViewSet):
         if not stripe.api_key:
             stripe.api_key = "sk_test_fake_secret_key"
 
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
 
         # Stripe metadata
         meta = {
@@ -2446,7 +2446,7 @@ class DynamicCheckoutView(APIView):
         if not stripe.api_key:
             stripe.api_key = "sk_test_fake_secret_key"
 
-        frontend_url = getattr(django_settings, 'FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = getattr(django_settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
 
         # Direct activation on localhost / local debug to bypass Stripe redirect and webhook requirement
         import sys
@@ -2656,7 +2656,7 @@ class BackofficeRegisterCompanyView(APIView):
             signer = TimestampSigner(salt='auto-login')
             token = signer.sign(str(admin_user.id))
             
-            frontend_url = getattr(django_settings, 'FRONTEND_URL', 'http://localhost:3000')
+            frontend_url = getattr(django_settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
             login_link = f"{frontend_url}/login/verify?token={token}"
             
             subject = 'Welcome to CubeLogs - Your Workspace is Ready!'

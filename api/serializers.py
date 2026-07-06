@@ -199,7 +199,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         login_signer = TimestampSigner(salt='auto-login')
         login_token = login_signer.sign(str(employee.id))
         
-        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
         manual_login_url = f"{frontend_url}/login"
         magic_login_url = f"{frontend_url}/login/verify?token={login_token}"
         revoke_url = f"{frontend_url}/revoke?token={revoke_token}"

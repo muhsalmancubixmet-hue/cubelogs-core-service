@@ -2,6 +2,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 from api.models import Employee, AttendanceLog
+from django.conf import settings
 
 class AttendanceTests(APITestCase):
     def setUp(self):
@@ -717,8 +718,8 @@ class WorkspaceProvisioningPipelineTests(APITestCase):
         self.assertTrue(Employee.objects.filter(email='fadi@cubelogs-tenant.com').exists())
         emp = Employee.objects.get(email='fadi@cubelogs-tenant.com')
         self.assertTrue(emp.isSuperAdmin)
-        self.assertTrue(emp.is_superuser)
-        self.assertTrue(emp.is_staff)
+        self.assertFalse(emp.is_superuser)
+        self.assertFalse(emp.is_staff)
         self.assertEqual(emp.first_name, 'Fadi')
         self.assertEqual(emp.last_name, 'Manager')
 
@@ -734,7 +735,7 @@ class WorkspaceProvisioningPipelineTests(APITestCase):
         self.assertIn('fadi@cubelogs-tenant.com', email.to)
         self.assertIn('Welcome to CubeLogs - Your Login Credentials', email.subject)
         self.assertIn('Username: fadi_cb', email.body)
-        self.assertIn('Alternatively, you can log in manually at http://localhost:3000/login', email.body)
+        self.assertIn(f'Alternatively, you can log in manually at {settings.FRONTEND_URL}/login', email.body)
         self.assertIn('/revoke?token=', email.body)
 
 

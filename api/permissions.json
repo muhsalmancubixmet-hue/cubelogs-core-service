@@ -5,7 +5,8 @@
       "metadata": {
         "name": "Attendance Management",
         "icon": "AttendanceIcon",
-        "required_subscription_flag": "is_attendance_enabled"
+        "required_subscription_flag": "is_attendance_enabled",
+        "price": "99.00"
       },
       "functional_capabilities": [
         { "id": "attendance:staff", "label": "Attendance & Clocking", "path": "/attendance", "tab": "" },
@@ -26,7 +27,8 @@
       "metadata": {
         "name": "Project Management",
         "icon": "TasksIcon",
-        "required_subscription_flag": "is_project_enabled"
+        "required_subscription_flag": "is_project_enabled",
+        "price": "56.00"
       },
       "functional_capabilities": [
         { "id": "tasks:create", "label": "Add Task Workspace", "path": "/tasks", "tab": "add" },

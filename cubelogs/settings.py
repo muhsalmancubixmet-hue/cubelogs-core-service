@@ -188,7 +188,7 @@ EMAIL_USE_TLS = True
 DEFAULT_FROM_EMAIL = 'muhsalman.cubixmet@gmail.com'
 
 # URL for invitation links
-FRONTEND_URL = 'http://localhost:3000'
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')
 
 # Celery Configuration
 CELERY_BROKER_URL = 'sqla+sqlite:///celerydb.sqlite3'
