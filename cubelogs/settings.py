@@ -3,10 +3,11 @@ import os
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
-load_dotenv()
-
 # Define base directory
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from absolute path
+load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 
 # Email Backend (SMTP via Gmail)
@@ -223,6 +224,10 @@ else:
 # Media files configuration
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# Stripe API Keys
+STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
 
 
 
