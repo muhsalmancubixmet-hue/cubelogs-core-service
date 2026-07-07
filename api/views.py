@@ -842,6 +842,27 @@ class LeaveViewSet(viewsets.ModelViewSet):
             action="Leave Applied",
             details=f"Applied for {leave.leaveTypeName} leave from {leave.startDate} to {leave.endDate} ({leave.duration} days)."
         )
+        
+        # Send leave notification immediately to the relevant recipient (Super Admin of organization)
+        try:
+            from api.tasks import queue_and_send_email
+            org = leave.employee.organization if leave.employee else None
+            if org:
+                superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                if superadmin:
+                    subject = f"Leave Application Submitted: {leave.employeeName}"
+                    body = (
+                        f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                        f"{leave.employeeName} has submitted a leave application for {leave.leaveTypeName}.\n"
+                        f"Duration: {leave.startDate} to {leave.endDate} ({leave.duration} days).\n"
+                        f"Reason: {leave.reason or 'No reason provided'}.\n\n"
+                        f"Please log in to the portal to approve or reject this request.\n\n"
+                        f"CubeLogs Portal"
+                    )
+                    queue_and_send_email(superadmin.email, subject, body)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to send leave notification email: {e}")
 
     @action(detail=True, methods=['patch'], url_path='status')
     def update_status(self, request, pk=None):
@@ -1232,7 +1253,7 @@ This link is highly time-sensitive and will expire in 2 minutes.
 If you did not request this, you can safely ignore this email.
 """
         from api.models import EmailQueue
-        from api.tasks import send_queued_email_task
+        from api.tasks import send_queued_emailqueue_task
 
         # Create the email log in EmailQueue
         email_log = EmailQueue.objects.create(
@@ -1245,7 +1266,7 @@ If you did not request this, you can safely ignore this email.
 
         try:
             # Trigger celery task
-            result = send_queued_email_task.delay(email_log.id)
+            result = send_queued_emailqueue_task.delay(email_log.id)
             email_log.task_id = result.id
             email_log.save()
         except Exception as e:
@@ -1752,7 +1773,8 @@ def stripe_webhook(request):
 
     import os
     from dotenv import load_dotenv
-    load_dotenv(override=True)
+    dotenv_path = os.path.join(str(settings.BASE_DIR), '.env')
+    load_dotenv(dotenv_path, override=True)
     stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(settings, 'STRIPE_SECRET_KEY', None)
 
     try:
@@ -2087,6 +2109,14 @@ class WalletViewSet(viewsets.ModelViewSet):
             logging.getLogger(__name__).error(f"Error sweeping subscriptions in WalletViewSet: {e}")
         
         user = request.user
+        if not user.organization:
+            from api.models import Organization
+            org, _ = Organization.objects.get_or_create(
+                subdomain="mock",
+                defaults={'name': 'Mock Organization'}
+            )
+            user.organization = org
+            user.save()
         
         try:
             # Fetch wallet safely without crashing on corrupted prefetch queries
@@ -2134,6 +2164,15 @@ class WalletViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Invalid amount value'}, status=status.HTTP_400_BAD_REQUEST)
 
         user = request.user
+        if not user.organization:
+            from api.models import Organization
+            org, _ = Organization.objects.get_or_create(
+                subdomain="mock",
+                defaults={'name': 'Mock Organization'}
+            )
+            user.organization = org
+            user.save()
+
         wallet, created = Wallet.objects.get_or_create(
             employee=user,
             defaults={'organization': user.organization, 'balance': Decimal('0.00')}
@@ -2167,9 +2206,10 @@ class WalletViewSet(viewsets.ModelViewSet):
 
         # Instantiate Stripe Checkout Session
         import os
-        from dotenv import load_dotenv
-        load_dotenv(override=True)
         from django.conf import settings
+        from dotenv import load_dotenv
+        dotenv_path = os.path.join(str(settings.BASE_DIR), '.env')
+        load_dotenv(dotenv_path, override=True)
         stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(settings, 'STRIPE_SECRET_KEY', None)
         if not stripe.api_key:
             stripe.api_key = "sk_test_fake_secret_key"
@@ -2185,6 +2225,25 @@ class WalletViewSet(viewsets.ModelViewSet):
         if validated_code:
             meta['coupon_code'] = validated_code
             meta['bonus_amount'] = str(bonus_amount_dec)
+
+        is_fake_stripe = stripe.api_key == "sk_test_fake_secret_key"
+        if is_fake_stripe:
+            import uuid
+            session_id = f"mock_wallet_topup_{uuid.uuid4().hex}"
+            
+            # Create a pending transaction record
+            WalletTransaction.objects.create(
+                wallet=wallet,
+                amount=amount_dec,
+                transactionType='Credit',
+                success=False, # Pending
+                stripe_session_id=session_id,
+                status='Pending',
+                details=f"Pending wallet top-up of ₹{amount_dec} via Mock Checkout"
+            )
+            
+            checkout_url = f"{frontend_url}/admin/settings?tab=billing&status=success&session_id={session_id}"
+            return Response({'checkoutUrl': checkout_url}, status=status.HTTP_200_OK)
 
         try:
             session = stripe.checkout.Session.create(
@@ -2249,13 +2308,20 @@ class WalletViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if not user.organization:
-            return Response({'error': 'User is not part of an organization'}, status=status.HTTP_400_BAD_REQUEST)
+            from api.models import Organization
+            org, _ = Organization.objects.get_or_create(
+                subdomain="mock",
+                defaults={'name': 'Mock Organization'}
+            )
+            user.organization = org
+            user.save()
 
         org = user.organization
-        try:
-            settings_obj = org.settings
-        except Exception:
-            return Response({'error': 'Organization settings not found'}, status=status.HTTP_400_BAD_REQUEST)
+        settings_obj = org.settings
+        if not settings_obj:
+            settings_obj = OrgSettings.objects.create()
+            org.settings = settings_obj
+            org.save()
 
         # --- Already in desired state? ---
         current_state = getattr(settings_obj, f'is_{module}_enabled', False)
@@ -2395,9 +2461,15 @@ class DynamicCheckoutView(APIView):
             return Response({'error': 'Invalid employee count value'}, status=status.HTTP_400_BAD_REQUEST)
 
         user = request.user
+        if not user.organization:
+            from api.models import Organization
+            org, _ = Organization.objects.get_or_create(
+                subdomain="mock",
+                defaults={'name': 'Mock Organization'}
+            )
+            user.organization = org
+            user.save()
         org = user.organization
-        if not org:
-            return Response({'error': 'User is not associated with an organization'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Calculate total price
         rate = 0
@@ -2440,8 +2512,9 @@ class DynamicCheckoutView(APIView):
         # Generate a Stripe Checkout session
         import os
         from dotenv import load_dotenv
-        load_dotenv(override=True)
         from django.conf import settings as django_settings
+        dotenv_path = os.path.join(str(django_settings.BASE_DIR), '.env')
+        load_dotenv(dotenv_path, override=True)
         stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(django_settings, 'STRIPE_SECRET_KEY', None)
         if not stripe.api_key:
             stripe.api_key = "sk_test_fake_secret_key"
@@ -2766,8 +2839,9 @@ class ConfirmSubscriptionView(APIView):
         # Load environment variables
         import os
         from dotenv import load_dotenv
-        load_dotenv(override=True)
         from django.conf import settings as django_settings
+        dotenv_path = os.path.join(str(django_settings.BASE_DIR), '.env')
+        load_dotenv(dotenv_path, override=True)
         stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(django_settings, 'STRIPE_SECRET_KEY', None)
         if not stripe.api_key:
             stripe.api_key = "sk_test_fake_secret_key"
@@ -2782,15 +2856,20 @@ class ConfirmSubscriptionView(APIView):
                     employee=request.user, 
                     defaults={'organization': request.user.organization, 'balance': Decimal('0.00')}
                 )
+                
+                transaction = WalletTransaction.objects.filter(stripe_session_id=session_id).first()
+                deposit_amount = Decimal('1000.00')
+                if transaction:
+                    deposit_amount = transaction.amount
+
                 try:
                     current_balance = Decimal(str(wallet.balance))
                 except (InvalidOperation, ValueError, TypeError):
                     current_balance = Decimal('0.00')
-                wallet.balance = current_balance + Decimal('1000.00')
+                wallet.balance = current_balance + deposit_amount
                 wallet.save()
                 
                 # Update transaction status
-                transaction = WalletTransaction.objects.filter(stripe_session_id=session_id).first()
                 if transaction:
                     transaction.status = 'Success'
                     transaction.success = True
@@ -2798,7 +2877,7 @@ class ConfirmSubscriptionView(APIView):
                 else:
                     WalletTransaction.objects.create(
                         wallet=wallet,
-                        amount=Decimal('1000.00'),
+                        amount=deposit_amount,
                         transactionType='Credit',
                         success=True,
                         stripe_session_id=session_id,

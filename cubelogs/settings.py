@@ -199,6 +199,9 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+import sys
+CELERY_TASK_ALWAYS_EAGER = 'test' in sys.argv
+
 # Celery Beat Periodic Tasks
 from datetime import timedelta
 
@@ -227,8 +230,4 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 # Stripe API Keys
 STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY')
-STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')
-
-
-
-
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET')# Trigger reload to load FRONTEND_URL from .env

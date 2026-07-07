@@ -335,6 +335,60 @@ class Wallet(models.Model):
     def __str__(self):
         return f"{self.employee.email}'s Wallet - Balance: {self.balance}"
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if getattr(self, '_processing_dues', False):
+            return
+        try:
+            self._processing_dues = True
+            from api.models import MonthlyInvoice, WalletTransaction
+            from api.tasks import queue_and_send_email
+            from decimal import Decimal
+            
+            unpaid_invoices = list(MonthlyInvoice.objects.filter(organization=self.organization, is_paid=False).order_by('billing_month'))
+            total_due = sum(inv.amount for inv in unpaid_invoices)
+            
+            if total_due > 0 and self.balance >= total_due:
+                self.balance = self.balance - total_due
+                self.save()
+                
+                for inv in unpaid_invoices:
+                    inv.is_paid = True
+                    from django.utils import timezone
+                    inv.paid_at = timezone.now()
+                    inv.save()
+                    
+                WalletTransaction.objects.create(
+                    wallet=self,
+                    amount=total_due,
+                    transactionType='Debit',
+                    success=True,
+                    status='Success',
+                    details=f"Automated wallet deduction: Outstanding dues cleared on top-up."
+                )
+                
+                if self.organization and self.organization.settings:
+                    settings = self.organization.settings
+                    settings.subscriptionStatus = 'Active'
+                    settings.save()
+                    
+                superadmin = Employee.objects.filter(organization=self.organization, isSuperAdmin=True).first()
+                if superadmin:
+                    subject = f"Notice: Dues Paid & Workspace Activated for {self.organization.name}"
+                    message = (
+                        f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                        f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully paid after your recent top-up.\n"
+                        f"Your workspace is fully active.\n"
+                        f"Updated Wallet Balance: ₹{self.balance} INR.\n\n"
+                        f"CubeLogs Billing Team"
+                    )
+                    try:
+                        queue_and_send_email(superadmin.email, subject, message)
+                    except Exception:
+                        pass
+        finally:
+            self._processing_dues = False
+
 
 class WalletTransaction(models.Model):
     TRANSACTION_TYPES = [
@@ -460,6 +514,21 @@ class Testimonial(models.Model):
 
     def __str__(self):
         return f"{self.author_name} ({self.stars} stars)"
+
+
+class MonthlyInvoice(models.Model):
+    organization = models.ForeignKey('Organization', on_delete=models.CASCADE, related_name='monthly_invoices')
+    billing_month = models.DateField()  # Date of the 1st day of the billing month
+    amount = models.DecimalField(max_digits=20, decimal_places=2)
+    is_paid = models.BooleanField(default=False)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    invoice_email_sent = models.BooleanField(default=False)
+    deduction_reminder_sent = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"Invoice for {self.organization.name} - {self.billing_month.strftime('%B %Y')} - Amount: {self.amount} (Paid: {self.is_paid})"
 
 
 

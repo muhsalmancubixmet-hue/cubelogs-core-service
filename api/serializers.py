@@ -440,10 +440,39 @@ class LeadHistorySerializer(serializers.ModelSerializer):
 
 class SubscriptionPackageSerializer(serializers.ModelSerializer):
     embed_url = serializers.SerializerMethodField()
+    activeUsersCount = serializers.SerializerMethodField()
 
     class Meta:
         model = SubscriptionPackage
-        fields = ['id', 'name', 'price', 'employeeLimit', 'features', 'isActive', 'video_url', 'embed_url', 'createdAt']
+        fields = ['id', 'name', 'price', 'employeeLimit', 'features', 'isActive', 'video_url', 'embed_url', 'activeUsersCount', 'createdAt']
+
+    def get_activeUsersCount(self, obj):
+        from api.models import Employee
+        features = obj.features if isinstance(obj.features, list) else []
+        features_lower = [f.lower() for f in features]
+        
+        is_attendance = 'attendance' in features_lower or any('attendance' in f or 'leaves' in f or 'holidays' in f for f in features_lower)
+        is_project = 'project' in features_lower or 'tasks' in features_lower or any('tasks' in f for f in features_lower)
+        
+        name_lower = obj.name.lower()
+        if 'attendance' in name_lower:
+            is_attendance = True
+        if 'project' in name_lower or 'task' in name_lower:
+            is_project = True
+
+        if not is_attendance and not is_project:
+            return 0
+
+        qs = Employee.objects.filter(is_active=True, organization__isnull=False)
+
+        if is_attendance and is_project:
+            qs = qs.filter(organization__settings__is_attendance_enabled=True, organization__settings__is_project_enabled=True)
+        elif is_attendance:
+            qs = qs.filter(organization__settings__is_attendance_enabled=True)
+        elif is_project:
+            qs = qs.filter(organization__settings__is_project_enabled=True)
+
+        return qs.count()
 
     def get_embed_url(self, obj):
         video_id = extract_youtube_id(obj.video_url)

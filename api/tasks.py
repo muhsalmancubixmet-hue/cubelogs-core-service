@@ -219,6 +219,227 @@ def sweep_workspace_subscriptions():
         settings = org.settings
         if not settings:
             continue
+
+        # Real Monthly Invoicing & Billing Workflow
+        # 1. Monthly Billing (1st of Every Month)
+        now = timezone.localtime(timezone.now())
+        today = now.date()
+        billing_month = today.replace(day=1)
+
+        from api.models import MonthlyInvoice
+
+        # Generate invoice on the 1st of each month
+        if today.day == 1:
+            invoice, created = MonthlyInvoice.objects.get_or_create(
+                organization=org,
+                billing_month=billing_month,
+                defaults={
+                    'amount': Decimal('0.00'),
+                    'is_paid': False
+                }
+            )
+            if created:
+                has_previous_unpaid = MonthlyInvoice.objects.filter(
+                    organization=org,
+                    billing_month__lt=billing_month,
+                    is_paid=False
+                ).exists()
+
+                if has_previous_unpaid or settings.subscriptionStatus in ['Unpaid', 'Suspended']:
+                    amount = Decimal('50.00')  # Data keeping/rent charge
+                else:
+                    rate = 0
+                    if settings.is_attendance_enabled:
+                        rate += 100
+                    if settings.is_project_enabled:
+                        rate += 100
+                    amount = Decimal(str(settings.max_employees_allowed * rate))
+
+                invoice.amount = amount
+                invoice.save()
+
+            if not invoice.invoice_email_sent:
+                superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                if superadmin:
+                    unpaid_list = list(MonthlyInvoice.objects.filter(organization=org, is_paid=False).order_by('billing_month'))
+                    unpaid_count = len(unpaid_list)
+
+                    if unpaid_count == 1:
+                        subject = f"Invoice generated for workspace {org.name}"
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"An invoice of ₹{invoice.amount} INR has been generated for workspace {org.name} for the month of {billing_month.strftime('%B %Y')}.\n"
+                            f"An automatic wallet deduction check will run on the 5th of this month at 12:00 PM.\n\n"
+                            f"Please ensure your prepaid wallet has sufficient balance.\n\n"
+                            f"Thank you,\nCubeLogs Billing Team"
+                        )
+                    elif unpaid_count == 2:
+                        overdue_inv = unpaid_list[0]
+                        subject = f"Overdue Payment Reminder: Invoice for workspace {org.name}"
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"This is an overdue payment reminder that your previous invoice for {overdue_inv.billing_month.strftime('%B %Y')} of ₹{overdue_inv.amount} INR is still unpaid.\n"
+                            f"A new bill for the current month's data retention rent charge of ₹{invoice.amount} INR has been generated.\n\n"
+                            f"Please deposit funds into your wallet immediately to reactivate premium features.\n\n"
+                            f"Thank you,\nCubeLogs Billing Team"
+                        )
+                    else:
+                        subject = f"URGENT: Workspace Data Deletion Warning - Unpaid Invoice for {org.name}"
+                        dues_details = "\n".join([f"- {inv.billing_month.strftime('%B %Y')}: ₹{inv.amount} INR" for inv in unpaid_list])
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"URGENT WARNING: Your workspace {org.name} has multiple pending payments that are overdue:\n"
+                            f"{dues_details}\n\n"
+                            f"ALL YOUR USER AND WORKSPACE DATA WILL BE PERMANENTLY DELETED after three months if outstanding payments are not completed.\n\n"
+                            f"Please settle the dues immediately to prevent data loss.\n\n"
+                            f"Thank you,\nCubeLogs Billing Team"
+                        )
+
+                    try:
+                        queue_and_send_email(superadmin.email, subject, message)
+                        invoice.invoice_email_sent = True
+                        invoice.save()
+                    except Exception as e:
+                        logger.error(f"Failed to send 1st-of-month invoice email for {org.name}: {e}")
+
+            oldest_unpaid = MonthlyInvoice.objects.filter(organization=org, is_paid=False).order_by('billing_month').first()
+            if oldest_unpaid:
+                days_overdue = (today - oldest_unpaid.billing_month).days
+                if days_overdue >= 90:
+                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                    if superadmin:
+                        subject = f"Notice of Permanent Data Deletion: Workspace {org.name}"
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"As your workspace {org.name} has remained unpaid for over three months, "
+                            f"all user profiles, attendance sheets, tasks, settings, and other associated workspace data "
+                            f"have been permanently deleted from our servers.\n\n"
+                            f"If you wish to use our platform again, you will need to register a new account.\n\n"
+                            f"CubeLogs System Administrator"
+                        )
+                        try:
+                            send_mail(subject, message, 'no-reply@cubelogs.com', [superadmin.email])
+                        except Exception as e:
+                            logger.error(f"Failed to send final deletion email: {e}")
+                    
+                    logger.warning(f"Permanently deleting organization {org.name} due to 3+ months non-payment.")
+                    org.delete()
+                    continue
+
+        # 2. Automatic Wallet Deduction (5th day of each month)
+        is_retry_day = (today.day == 5 and now.hour >= 12) or (today.day == 6 and now.hour < 12)
+        if is_retry_day:
+            if today.day == 5 and now.hour == 12:
+                from django.core.cache import cache
+                reminder_key = f"org_{org.id}_deduction_reminder_sent_{today.year}_{today.month}"
+                if not cache.get(reminder_key):
+                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                    if superadmin:
+                        unpaid_invoices = MonthlyInvoice.objects.filter(organization=org, is_paid=False)
+                        total_due = sum(inv.amount for inv in unpaid_invoices)
+                        if total_due > 0:
+                            subject = f"Deduction Alert: Automatic Wallet Payment Pending for {org.name}"
+                            message = (
+                                f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                                f"This is an automated notice that we will attempt to deduct your outstanding workspace dues of ₹{total_due} INR "
+                                f"automatically from your prepaid wallet balance starting today at 12:00 PM.\n\n"
+                                f"Please ensure your wallet has sufficient balance to avoid service restriction.\n\n"
+                                f"Thank you,\nCubeLogs Billing Team"
+                            )
+                            try:
+                                queue_and_send_email(superadmin.email, subject, message)
+                                cache.set(reminder_key, True, 86400 * 2)
+                            except Exception as e:
+                                logger.error(f"Failed to send deduction warning: {e}")
+
+            from django.core.cache import cache
+            retry_lock_key = f"org_{org.id}_last_deduction_retry_{today.year}_{today.month}"
+            if not cache.get(retry_lock_key):
+                unpaid_invoices = list(MonthlyInvoice.objects.filter(organization=org, is_paid=False))
+                total_due = sum(inv.amount for inv in unpaid_invoices)
+                
+                if total_due > 0:
+                    wallet = Wallet.objects.filter(organization=org).first()
+                    if not wallet:
+                        superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                        if superadmin:
+                            wallet, _ = Wallet.objects.get_or_create(
+                                employee=superadmin,
+                                defaults={'organization': org, 'balance': Decimal('0.00')}
+                            )
+
+                    safe_balance = Decimal(str(wallet.balance)) if wallet else Decimal('0.00')
+                    
+                    if wallet and safe_balance >= total_due:
+                        wallet.balance = safe_balance - total_due
+                        wallet.save()
+                        
+                        for inv in unpaid_invoices:
+                            inv.is_paid = True
+                            inv.paid_at = timezone.now()
+                            inv.save()
+                            
+                        WalletTransaction.objects.create(
+                            wallet=wallet,
+                            amount=total_due,
+                            transactionType='Debit',
+                            success=True,
+                            status='Success',
+                            details=f"Automated wallet deduction: Monthly outstanding invoices cleared."
+                        )
+                        
+                        settings.subscriptionStatus = 'Active'
+                        settings.save()
+                        
+                        superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                        if superadmin:
+                            subject = f"Notice: Dues Paid & Workspace Activated for {org.name}"
+                            message = (
+                                f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                                f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully deducted from your wallet.\n"
+                                f"Your workspace is fully active.\n"
+                                f"Updated Wallet Balance: ₹{wallet.balance} INR.\n\n"
+                                f"CubeLogs Billing Team"
+                            )
+                            try:
+                                queue_and_send_email(superadmin.email, subject, message)
+                            except Exception as e:
+                                logger.error(f"Failed to send payment success email: {e}")
+                    else:
+                        WalletTransaction.objects.create(
+                            wallet=wallet,
+                            amount=total_due,
+                            transactionType='Debit',
+                            success=False,
+                            status='Failed',
+                            details=f"Auto-deduction failed: Insufficient balance. Required: ₹{total_due}."
+                        )
+                        cache.set(retry_lock_key, True, 600)
+                        logger.warning(f"Deduction failed for organization {org.name} due to insufficient balance.")
+
+        # 3. Stop Retrying & Apply Restriction (after 6th day 12:00 PM)
+        is_after_retry_period = (today.day == 6 and now.hour >= 12) or (today.day > 6)
+        if is_after_retry_period:
+            unpaid_count = MonthlyInvoice.objects.filter(organization=org, is_paid=False).count()
+            if unpaid_count > 0:
+                if settings.subscriptionStatus != 'Unpaid':
+                    settings.subscriptionStatus = 'Unpaid'
+                    settings.save()
+                    
+                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
+                    if superadmin:
+                        subject = f"Alert: Workspace Restricted for {org.name}"
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"Your workspace {org.name} has been restricted because the automatic wallet deduction on the 5th failed "
+                            f"due to insufficient balance, and the retry period has ended.\n\n"
+                            f"To restore full access, please deposit outstanding dues into your wallet immediately.\n\n"
+                            f"Thank you,\nCubeLogs Billing Team"
+                        )
+                        try:
+                            queue_and_send_email(superadmin.email, subject, message)
+                        except Exception as e:
+                            logger.error(f"Failed to send restriction notice email: {e}")
         
         # Check if we should send a warning email (5 minutes remaining in the 5-minute cycle)
         if settings.subscriptionStatus == 'Active' and settings.subscriptionExpiresAt:
