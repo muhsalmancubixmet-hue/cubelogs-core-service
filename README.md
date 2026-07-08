@@ -65,6 +65,18 @@ The APIs will be live at `http://127.0.0.1:8000/api/`.
 
 ---
 
+## Codebase Modular Refactoring
+
+The backend codebase has been refactored from a monolithic setup into highly scalable, domain-driven package modules under `api/`:
+
+- **Models (`api/models/`)**: Decoupled models package representing database schema modules. Every model module (e.g., `employee`, `organization`, `billing`) is explicitly defined and unified in `api/models/__init__.py`.
+- **Views (`api/views/`)**: Deconstructed views package separated by functional domains (e.g. `auth.py`, `employee.py`, `attendance.py`, `billing.py`, `cms.py`). All views are imported and re-exported in `api/views/__init__.py` keeping `api/urls.py` intact.
+- **Serializers (`api/serializers/`)**: Extracted serialization mapping layers isolated by feature boundaries.
+- **Celery Tasks (`api/tasks/`)**: Decoupled async job functions separated into email queue dispatch tasks and billing/Stripe sync logic.
+- **Signals (`api/signals/`)**: System triggers for tenant creation, user setup notifications, and webhook alerts separated into modular signal files.
+
+---
+
 ## API Documentation
 
 ### Authentication Endpoints

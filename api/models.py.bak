@@ -341,15 +341,14 @@ class Wallet(models.Model):
             return
         try:
             self._processing_dues = True
-            from api.models import MonthlyInvoice, WalletTransaction
             from api.tasks import queue_and_send_email
             from decimal import Decimal
             
             unpaid_invoices = list(MonthlyInvoice.objects.filter(organization=self.organization, is_paid=False).order_by('billing_month'))
-            total_due = sum(inv.amount for inv in unpaid_invoices)
+            total_due = sum((inv.amount for inv in unpaid_invoices), Decimal('0'))
             
             if total_due > 0 and self.balance >= total_due:
-                self.balance = self.balance - total_due
+                self.balance = self.balance - total_due  # type: ignore[assignment]
                 self.save()
                 
                 for inv in unpaid_invoices:
@@ -369,7 +368,7 @@ class Wallet(models.Model):
                 
                 if self.organization and self.organization.settings:
                     settings = self.organization.settings
-                    settings.subscriptionStatus = 'Active'
+                    settings.subscriptionStatus = 'Active'  # type: ignore[assignment]
                     settings.save()
                     
                 superadmin = Employee.objects.filter(organization=self.organization, isSuperAdmin=True).first()

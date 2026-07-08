@@ -1,3 +1,4 @@
+# api/tasks/subscription.py
 try:
     from celery import shared_task
 except ImportError:
@@ -5,37 +6,12 @@ except ImportError:
         return func
 
 from django.utils import timezone
-from api.models import Employee, Organization, OrgSettings, Wallet, WalletTransaction, AuditLog, EmailQueue
-from django.core.mail import send_mail
+from api.models import Employee, Organization, Wallet, WalletTransaction, AuditLog, MonthlyInvoice
 from decimal import Decimal
 import logging
+from api.tasks.email import queue_and_send_email
 
 logger = logging.getLogger(__name__)
-
-
-def queue_and_send_email(recipient, subject, body, from_email=None, html_body=None):
-    """
-    Helper function to log an email in EmailQueue and dispatch it via Celery task.
-    """
-    email_log = EmailQueue.objects.create(
-        recipient=recipient,
-        from_email=from_email or 'no-reply@cubelogs.com',
-        subject=subject,
-        body=body,
-        html_body=html_body,
-        status='PENDING'
-    )
-    try:
-        result = send_queued_emailqueue_task.delay(email_log.id)
-        email_log.task_id = result.id
-        email_log.save()
-    except Exception as e:
-        logger.error(f"Failed to queue email task: {e}")
-        email_log.status = 'FAILED'
-        email_log.error_message = f"Failed to queue celery task. Error: {e}"
-        email_log.save()
-
-
 
 @shared_task
 def sweep_workspace_subscriptions():
@@ -57,7 +33,6 @@ def sweep_workspace_subscriptions():
             if not settings_obj:
                 continue
             
-            # If subscriptionRenewedAt is not set, initialize it
             if not settings_obj.subscriptionRenewedAt:
                 settings_obj.subscriptionRenewedAt = timezone.now()
                 settings_obj.save()
@@ -65,7 +40,6 @@ def sweep_workspace_subscriptions():
             elapsed = (timezone.now() - settings_obj.subscriptionRenewedAt).total_seconds()
             logger.info(f"Workspace {org.name} billing elapsed seconds: {elapsed}")
             
-            # Calculate cost
             rate = 0
             if settings_obj.is_attendance_enabled:
                 rate += 100
@@ -83,7 +57,6 @@ def sweep_workspace_subscriptions():
                         defaults={'organization': org, 'balance': Decimal('0.00')}
                     )
             
-            # Minute 0: Trigger initial invoice generation and dispatch Email 1 (Usage Invoice)
             if 0 <= elapsed < 120:
                 sent_flag = f"org_{org.id}_email_1_sent"
                 if not cache.get(sent_flag):
@@ -100,7 +73,6 @@ def sweep_workspace_subscriptions():
                         logger.info(f"[TEST MODE] Queued usage invoice email to {superadmin.email}")
                     cache.set(sent_flag, True, 600)
             
-            # Minute 2: Trigger unpaid status check and dispatch Email 2 (Grace Period Reminder)
             elif 120 <= elapsed < 240:
                 if settings_obj.subscriptionStatus == 'Active':
                     settings_obj.subscriptionStatus = 'Pending Payment'
@@ -122,7 +94,6 @@ def sweep_workspace_subscriptions():
                             logger.info(f"[TEST MODE] Queued grace period email to {superadmin.email}")
                         cache.set(sent_flag, True, 600)
                         
-            # Minute 4: Dispatch Email 3 (Final Warning Notification) and hyper-frequent auto-pull task
             elif 240 <= elapsed < 360:
                 if settings_obj.subscriptionStatus != 'Active':
                     sent_flag = f"org_{org.id}_email_3_sent"
@@ -140,7 +111,6 @@ def sweep_workspace_subscriptions():
                             logger.info(f"[TEST MODE] Queued final warning email to {superadmin.email}")
                         cache.set(sent_flag, True, 600)
                     
-                    # Auto-pull logic
                     safe_balance = wallet.balance if wallet else Decimal('0.00')
                     if wallet and safe_balance >= cost_dec:
                         wallet.balance = safe_balance - cost_dec
@@ -160,7 +130,6 @@ def sweep_workspace_subscriptions():
                             details=f"[TEST MODE] Automated auto-pull subscription renewal"
                         )
                         
-                        # Clear cache flags
                         cache.delete(f"org_{org.id}_email_1_sent")
                         cache.delete(f"org_{org.id}_email_2_sent")
                         cache.delete(f"org_{org.id}_email_3_sent")
@@ -177,7 +146,6 @@ def sweep_workspace_subscriptions():
                             queue_and_send_email(superadmin.email, subject, message, 'muhsalman.cubixmet@gmail.com')
                             logger.info(f"[TEST MODE] Subscription auto-pull success queued. Activated {org.name}")
                             
-            # Minute 6: Workspace transitions immediately to subscriptionStatus = 'Suspended'
             elif 360 <= elapsed < 480:
                 if settings_obj.subscriptionStatus != 'Active':
                     if settings_obj.subscriptionStatus != 'Suspended':
@@ -195,7 +163,6 @@ def sweep_workspace_subscriptions():
                             queue_and_send_email(superadmin.email, subject, message, 'muhsalman.cubixmet@gmail.com')
                             logger.info(f"[TEST MODE] Queued suspension email and suspended workspace {org.name}")
                             
-            # Minute 8: Trigger the post-suspension data maintenance block and Monthly Data Maintenance Rent Invoice
             elif elapsed >= 480:
                 sent_flag = f"org_{org.id}_maintenance_email_sent"
                 if not cache.get(sent_flag):
@@ -220,15 +187,10 @@ def sweep_workspace_subscriptions():
         if not settings:
             continue
 
-        # Real Monthly Invoicing & Billing Workflow
-        # 1. Monthly Billing (1st of Every Month)
         now = timezone.localtime(timezone.now())
         today = now.date()
         billing_month = today.replace(day=1)
 
-        from api.models import MonthlyInvoice
-
-        # Generate invoice on the 1st of each month
         if today.day == 1:
             invoice, created = MonthlyInvoice.objects.get_or_create(
                 organization=org,
@@ -246,7 +208,7 @@ def sweep_workspace_subscriptions():
                 ).exists()
 
                 if has_previous_unpaid or settings.subscriptionStatus in ['Unpaid', 'Suspended']:
-                    amount = Decimal('50.00')  # Data keeping/rent charge
+                    amount = Decimal('50.00')
                 else:
                     rate = 0
                     if settings.is_attendance_enabled:
@@ -318,7 +280,8 @@ def sweep_workspace_subscriptions():
                             f"CubeLogs System Administrator"
                         )
                         try:
-                            send_mail(subject, message, 'no-reply@cubelogs.com', [superadmin.email])
+                            from django.core.mail import send_mail
+                            send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [superadmin.email])
                         except Exception as e:
                             logger.error(f"Failed to send final deletion email: {e}")
                     
@@ -326,7 +289,6 @@ def sweep_workspace_subscriptions():
                     org.delete()
                     continue
 
-        # 2. Automatic Wallet Deduction (5th day of each month)
         is_retry_day = (today.day == 5 and now.hour >= 12) or (today.day == 6 and now.hour < 12)
         if is_retry_day:
             if today.day == 5 and now.hour == 12:
@@ -417,7 +379,6 @@ def sweep_workspace_subscriptions():
                         cache.set(retry_lock_key, True, 600)
                         logger.warning(f"Deduction failed for organization {org.name} due to insufficient balance.")
 
-        # 3. Stop Retrying & Apply Restriction (after 6th day 12:00 PM)
         is_after_retry_period = (today.day == 6 and now.hour >= 12) or (today.day > 6)
         if is_after_retry_period:
             unpaid_count = MonthlyInvoice.objects.filter(organization=org, is_paid=False).count()
@@ -441,7 +402,6 @@ def sweep_workspace_subscriptions():
                         except Exception as e:
                             logger.error(f"Failed to send restriction notice email: {e}")
         
-        # Check if we should send a warning email (5 minutes remaining in the 5-minute cycle)
         if settings.subscriptionStatus == 'Active' and settings.subscriptionExpiresAt:
             time_left = settings.subscriptionExpiresAt - timezone.now()
             if time_left.total_seconds() > 0 and time_left.total_seconds() <= 300 and not settings.has_sent_billing_warning:
@@ -477,7 +437,6 @@ def sweep_workspace_subscriptions():
                 settings.has_sent_billing_warning = True
                 settings.save()
         
-        # Check if due for expiration and immediate renewal:
         from datetime import timedelta
         is_new = not settings.subscriptionExpiresAt
         is_expired_active = (
@@ -492,11 +451,9 @@ def sweep_workspace_subscriptions():
         )
 
         if is_new or is_expired_active or is_pending_retry:
-            # Mark it as pending temporarily during processing
             if is_expired_active:
                 logger.info(f"Workspace {org.name} subscription reached 10-minute expiry.")
 
-            # Calculate cost
             rate = 0
             if settings.is_attendance_enabled:
                 rate += 100
@@ -508,10 +465,8 @@ def sweep_workspace_subscriptions():
             except (ValueError, TypeError):
                 cost_dec = Decimal('0.00')
             
-            # Find the admin user's wallet (or first wallet associated with the org)
             wallet = Wallet.objects.filter(organization=org).first()
             if not wallet:
-                # If no wallet, try to find the superadmin employee and get/create their wallet
                 superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
                 if superadmin:
                     wallet, _ = Wallet.objects.get_or_create(
@@ -527,18 +482,15 @@ def sweep_workspace_subscriptions():
                     safe_balance = Decimal('0.00')
             
             if wallet and safe_balance >= cost_dec:
-                # Possesses sufficient balance - auto-debit
                 wallet.balance = safe_balance - cost_dec
                 wallet.save()
                 
-                # Extend validity for another 10 minutes
                 settings.subscriptionDays = 30
                 settings.subscriptionStatus = 'Active'
                 settings.subscriptionExpiresAt = timezone.now() + timedelta(minutes=10)
                 settings.has_sent_billing_warning = False
                 settings.save()
                 
-                # Record successful Debit transaction in the ledger
                 WalletTransaction.objects.create(
                     wallet=wallet,
                     amount=cost_dec,
@@ -549,7 +501,6 @@ def sweep_workspace_subscriptions():
                 )
                 logger.info(f"Workspace {org.name} successfully auto-renewed for cost {cost_dec}.")
 
-                # Send confirmation email
                 superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
                 if superadmin:
                     subject = f"Notice: Subscription Expired & Auto-Renewed for {org.name}"
@@ -567,12 +518,10 @@ def sweep_workspace_subscriptions():
                     except Exception as e:
                         logger.error(f"Failed to queue expiration/renewal email to {superadmin.email}: {e}")
             else:
-                # Insufficient balance - flag pending payment and reset expiry so next retry is in 5 minutes
                 settings.subscriptionStatus = 'Pending Payment'
                 settings.subscriptionExpiresAt = timezone.now()
                 settings.save()
                 
-                # Record failed Debit transaction
                 if wallet:
                     WalletTransaction.objects.create(
                         wallet=wallet,
@@ -583,7 +532,6 @@ def sweep_workspace_subscriptions():
                         details=f"Automated subscription renewal failed: Insufficient balance. Required: ₹{cost_dec}."
                     )
                 
-                # Push audit log alert to the dashboard
                 AuditLog.objects.create(
                     employee=wallet.employee if wallet else None,
                     employeeName="System / Celery",
@@ -592,7 +540,6 @@ def sweep_workspace_subscriptions():
                 )
                 logger.warning(f"Workspace {org.name} auto-renewal failed due to insufficient balance.")
 
-                # Send renewal failure email
                 superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
                 if superadmin:
                     subject = f"URGENT: Subscription Expired & Renewal Failed for {org.name}"
@@ -610,104 +557,3 @@ def sweep_workspace_subscriptions():
                         logger.info(f"Expiration/Renewal failure email queued successfully to {superadmin.email} for org {org.name}.")
                     except Exception as e:
                         logger.error(f"Failed to queue expiration/renewal failure email to {superadmin.email}: {e}")
-
-
-@shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_queued_emailqueue_task(self, email_log_id):
-    """
-    Asynchronously sends an email logged in the EmailQueue.
-    Supports retries, tracks and updates status (SENT, FAILED, RETRYING).
-    """
-    from api.models import EmailQueue
-    from django.core.mail import send_mail
-    from django.utils import timezone
-    import logging
-
-    logger = logging.getLogger(__name__)
-    logger.info(f"Starting email dispatch for EmailQueue ID: {email_log_id}")
-
-    try:
-        email_log = EmailQueue.objects.get(pk=email_log_id)
-    except EmailQueue.DoesNotExist:
-        logger.error(f"EmailQueue with ID {email_log_id} does not exist.")
-        return
-
-    # Update metadata
-    email_log.task_id = self.request.id
-    email_log.status = 'RETRYING' if self.request.retries > 0 else 'PENDING'
-    email_log.save()
-
-    try:
-        send_mail(
-            subject=email_log.subject,
-            message=email_log.body,
-            from_email=email_log.from_email or 'no-reply@cubelogs.com',
-            recipient_list=[email_log.recipient],
-            fail_silently=False,
-            html_message=email_log.html_body,
-        )
-        # Mark as sent
-        email_log.status = 'SENT'
-        email_log.sent_at = timezone.now()
-        email_log.error_message = None
-        email_log.save()
-        logger.info(f"EmailQueue ID {email_log_id} successfully sent to {email_log.recipient}")
-    except Exception as exc:
-        logger.warning(f"Failed to send EmailQueue ID {email_log_id} to {email_log.recipient} on attempt {self.request.retries + 1}. Error: {exc}")
-        email_log.error_message = str(exc)
-        email_log.save()
-
-        from celery.exceptions import Retry
-        try:
-            self.retry(exc=exc)
-        except Retry:
-            raise
-        except Exception as retry_exc:
-            email_log.status = 'FAILED'
-            email_log.error_message = f"Max retries reached. Last exception: {exc}"
-            email_log.save()
-            logger.error(f"EmailQueue ID {email_log_id} marked as FAILED. Max retries exceeded.")
-            raise retry_exc
-
-
-@shared_task
-def send_queued_email_task(email_log_id):
-    """
-    Asynchronously sends a transactional HTML email logged in EmailLog.
-    """
-    from api.models import EmailLog
-    from django.core.mail import send_mail
-    from django.utils import timezone
-    import logging
-
-    logger = logging.getLogger(__name__)
-    logger.info(f"Starting email dispatch for EmailLog ID: {email_log_id}")
-
-    try:
-        email_log = EmailLog.objects.get(pk=email_log_id)
-    except EmailLog.DoesNotExist:
-        logger.error(f"EmailLog with ID {email_log_id} does not exist.")
-        return
-
-    try:
-        send_mail(
-            subject=email_log.subject,
-            message="Please view this email in an HTML-compatible client.",
-            from_email='no-reply@cubelogs.com',
-            recipient_list=[email_log.recipient],
-            fail_silently=False,
-            html_message=email_log.html_content,
-        )
-        # Mark as sent
-        email_log.status = 'SENT'
-        email_log.sent_at = timezone.now()
-        email_log.error_message = None
-        email_log.save()
-        logger.info(f"EmailLog ID {email_log_id} successfully sent to {email_log.recipient}")
-    except Exception as exc:
-        logger.error(f"Failed to send EmailLog ID {email_log_id} to {email_log.recipient}. Error: {exc}")
-        email_log.status = 'FAILED'
-        email_log.error_message = str(exc)
-        email_log.save()
-
-

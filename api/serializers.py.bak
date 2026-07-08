@@ -153,6 +153,13 @@ class EmployeeSerializer(serializers.ModelSerializer):
                         ]
                     })
         
+        # Parse name from initial_data if present
+        name = self.initial_data.get('name')
+        if name:
+            parts = name.strip().split(' ', 1)
+            validated_data['first_name'] = parts[0]
+            validated_data['last_name'] = parts[1] if len(parts) > 1 else ''
+
         # Check if an employee with this email already exists
         email = validated_data.get('email', '')
         employee = Employee.objects.filter(email=email).first() or Employee.objects.filter(username=email).first()
@@ -206,7 +213,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         
         # Send email
         subject = 'Welcome to CubeLogs - Your Login Credentials'
-        password_line = f"Password: {raw_password}" if raw_password else "Password: Use your existing password"
+        password_val = raw_password if raw_password else "Use your existing password"
         message = f"""Hello {employee.first_name or employee.email},
 
 Welcome to our company! An administrator has created an account for you on CubeLogs.
@@ -216,7 +223,7 @@ Magic Login Link: {magic_login_url}
 
 Using your secure credentials:
 Username: {employee.username}
-{password_line}
+Password: {password_val}
 
 ---
 If you did not expect this or believe this was a mistake, please click the link below to instantly revoke your registration:
@@ -255,12 +262,12 @@ It's Not Me: {revoke_url}
                     <p>Welcome to our company! An administrator has created a new account for you on the CubeLogs platform.</p>
                     <p>You can instantly log in to your dashboard by clicking the magic link below:</p>
                     <div style="text-align: center;">
-                        <a href="{magic_login_url}" class="btn">Log In Automatically</a>
+                        <a href="{magic_login_url}" class="btn">Go to Dashboard</a>
                     </div>
                     <p>Or manually login at {manual_login_url} using your secure credentials:</p>
                     <div class="credentials">
                         <p><strong>Username:</strong> {employee.username}</p>
-                        <p><strong>{password_line}</strong></p>
+                        <p><strong>Password:</strong> {password_val}</p>
                     </div>
                     
                     <div class="revoke-section">
@@ -280,7 +287,7 @@ It's Not Me: {revoke_url}
             send_mail(
                 subject,
                 message,
-                'no-reply@cubelogs.com',
+                settings.DEFAULT_FROM_EMAIL,
                 [employee.email],
                 fail_silently=False,
                 html_message=html_message
@@ -292,6 +299,12 @@ It's Not Me: {revoke_url}
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        # Parse name if provided in initial_data
+        name = self.initial_data.get('name')
+        if name:
+            parts = name.strip().split(' ', 1)
+            validated_data['first_name'] = parts[0]
+            validated_data['last_name'] = parts[1] if len(parts) > 1 else ''
         employee = super().update(instance, validated_data)
         if password:
             employee.set_password(password)

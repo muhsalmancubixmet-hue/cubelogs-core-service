@@ -182,6 +182,7 @@ SIMPLE_JWT = {
     'JTI_CLAIM': 'jti',
 }
 
+EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_HOST_USER = 'muhsalman.cubixmet@gmail.com'
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
@@ -200,7 +201,7 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
 import sys
-CELERY_TASK_ALWAYS_EAGER = 'test' in sys.argv
+CELERY_TASK_ALWAYS_EAGER = True
 
 # Celery Beat Periodic Tasks
 from datetime import timedelta

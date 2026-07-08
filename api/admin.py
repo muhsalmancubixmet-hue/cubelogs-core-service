@@ -56,13 +56,23 @@ class EmailQueueAdmin(admin.ModelAdmin):
 
 @admin.register(EmailLog)
 class EmailLogAdmin(admin.ModelAdmin):
-    list_display = ('recipient', 'subject', 'template_type', 'password', 'status', 'created_at')
+    list_display = ('recipient', 'subject', 'template_type', 'status', 'created_at')
     list_filter = ('status', 'template_type')
     search_fields = ('recipient', 'subject', 'password')
 
+    def password(self, obj):
+        return "********" if obj and obj.password else ""
+    password.short_description = "Password"
+
+    def get_fields(self, request, obj=None):
+        fields = super().get_fields(request, obj)
+        if obj:
+            return [f for f in fields if f != 'password']
+        return fields
+
     def get_readonly_fields(self, request, obj=None):
         if obj:
-            return [field.name for field in self.model._meta.fields if field.name != 'status']
+            return [field.name for field in self.model._meta.fields if field.name not in ('status', 'password')]
         return self.readonly_fields
 
 
