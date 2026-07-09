@@ -865,9 +865,7 @@ Your CubeLogs workspace for '{company_name}' has been successfully registered an
 
 You can log in to your dashboard directly using the link below:
 {login_link}
-
-Alternatively, you can log in manually at {frontend_url}/login with your credentials:
-Username: {admin_email}
+Email: {admin_email}
 Password: {admin_password}
 
 Welcome aboard!
@@ -901,14 +899,13 @@ The CubeLogs Team
                     <div class="content">
                         <h2>Hello {admin_first_name},</h2>
                         <p>Your CubeLogs workspace for <strong>'{company_name}'</strong> has been successfully registered and provisioned! We are thrilled to have you on board.</p>
-                        <p>You can instantly access your dashboard by clicking the secure magic link below:</p>
-                        <div style="text-align: center;">
-                            <a href="{login_link}" class="btn">Log In to Workspace</a>
-                        </div>
-                        <p>Alternatively, you can log in manually at <a href="{frontend_url}/login" style="color: #3b82f6; text-decoration: none; font-weight: 500;">{frontend_url}/login</a> using your initial credentials:</p>
-                        <div class="credentials">
-                            <p><strong>Email:</strong> {admin_email}</p>
-                            <p><strong>Password:</strong> {admin_password}</p>
+                        <p>You can securely log in to your dashboard by clicking the button below:</p>
+                        <div style="text-align: center; margin: 24px 0;">
+                            <a href="{login_link}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Log In to Workspace</a>
+                            <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+                                <p style="margin: 4px 0;"><strong>Email:</strong> {admin_email}</p>
+                                <p style="margin: 4px 0;"><strong>Password:</strong> {admin_password}</p>
+                            </div>
                         </div>
                         <p style="margin-top: 32px; color: #475569;">Welcome aboard,<br><strong style="color: #0f172a;">The CubeLogs Team</strong></p>
                     </div>
@@ -921,16 +918,20 @@ The CubeLogs Team
             </html>
             """
             try:
-                send_mail(
-                    subject,
-                    message,
-                    getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@cubelogs.com'),
-                    [admin_email],
-                    fail_silently=True,
-                    html_message=html_message
+                from api.models import EmailLog
+                from api.tasks import send_queued_email_task
+                log = EmailLog.objects.create(
+                    recipient=admin_email,
+                    subject=subject,
+                    template_type='WELCOME',
+                    html_content=html_message,
+                    status='PENDING',
+                    password=admin_password
                 )
-            except Exception:
-                pass
+                send_queued_email_task.delay(log.id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to queue registration welcome email: {e}")
 
             serializer = EmployeeSerializer(admin_user)
             user_data = serializer.data

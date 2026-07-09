@@ -163,13 +163,10 @@ def create_tenant_workspace(sender, instance, created, **kwargs):
 
 Welcome to our company! An administrator has created an account for you on CubeLogs
 
-Here are your secure login credentials:
-Username: {employee.username}
+Click the link below to instantly log in to your dashboard:
+Magic Login Link: {magic_login_url}
+Email: {email}
 Password: {random_password}
-
-You can log in instantly here: {magic_login_url}
-
-Alternatively, you can log in manually at {login_url}
 
 ---
 If you did not expect this or believe this was a mistake, please click the link below to instantly revoke your registration:
@@ -206,14 +203,13 @@ It's Not Me: {revoke_url}
                 <div class="content">
                     <h2>Hello,</h2>
                     <p>Welcome to our company! An administrator has created a new account for you on the CubeLogs platform.</p>
-                    <p>You can securely log in to your dashboard by clicking the link below:</p>
-                    <div style="text-align: center;">
-                        <a href="{magic_login_url}" class="btn">Log In to Dashboard</a>
-                    </div>
-                    <p>Alternatively, you can log in manually at <a href="{login_url}" style="color: #3b82f6; text-decoration: none; font-weight: 500;">{login_url}</a> using your initial credentials:</p>
-                    <div class="credentials">
-                        <p><strong>Username:</strong> {employee.username}</p>
-                        <p><strong>Password:</strong> {random_password}</p>
+                    <p>You can securely log in to your dashboard by clicking the button below:</p>
+                    <div style="text-align: center; margin: 24px 0;">
+                        <a href="{magic_login_url}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Log In to Dashboard</a>
+                        <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+                            <p style="margin: 4px 0;"><strong>Email:</strong> {email}</p>
+                            <p style="margin: 4px 0;"><strong>Password:</strong> {random_password}</p>
+                        </div>
                     </div>
                     
                     <div class="revoke-section">
@@ -230,13 +226,16 @@ It's Not Me: {revoke_url}
         </html>
         """
         try:
-            send_mail(
-                subject,
-                welcome_message,
-                settings.DEFAULT_FROM_EMAIL,
-                [email],
-                fail_silently=False,
-                html_message=html_message
+            from api.models import EmailLog
+            from api.tasks import send_queued_email_task
+            log = EmailLog.objects.create(
+                recipient=email,
+                subject=subject,
+                template_type='WELCOME',
+                html_content=html_message,
+                status='PENDING',
+                password=random_password
             )
+            send_queued_email_task.delay(log.id)
         except Exception as e:
-            print(f"Failed to send email welcoming tenant: {e}")
+            print(f"Failed to queue tenant welcome email: {e}")

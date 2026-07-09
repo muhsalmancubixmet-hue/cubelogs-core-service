@@ -200,7 +200,8 @@ for name, hdate, desc in [
     ("Christmas",        date(year, 12, 25), "Christian public holiday"),
 ]:
     _, created = Holiday.objects.get_or_create(
-        name=name, date=hdate, defaults=dict(description=desc)
+        name=name, date=hdate, organization=org,
+        defaults=dict(description=desc)
     )
     if created: holiday_count += 1
 

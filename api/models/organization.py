@@ -2,7 +2,7 @@ from django.db import models
 
 
 def default_weekly_holidays_default():
-    return ["Sunday"]
+    return []
 
 
 class OrgSettings(models.Model):

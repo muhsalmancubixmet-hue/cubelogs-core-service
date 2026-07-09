@@ -36,13 +36,13 @@ class AttendanceTests(APITestCase):
 class PasswordRecoveryTests(APITestCase):
     def setUp(self):
         from django.core import mail
-        mail.outbox = []
         self.employee = Employee.objects.create_user(
             email='reset-test@example.com',
             password='old-password123',
             first_name='Reset',
             last_name='User'
         )
+        mail.outbox = []
 
     def test_password_reset_request_success(self):
         from django.core import mail
@@ -734,9 +734,18 @@ class WorkspaceProvisioningPipelineTests(APITestCase):
         email = mail.outbox[0]
         self.assertIn('fadi@cubelogs-tenant.com', email.to)
         self.assertIn('Welcome to CubeLogs - Your Login Credentials', email.subject)
-        self.assertIn('Username: fadi_cb', email.body)
-        self.assertIn(f'Alternatively, you can log in manually at {settings.FRONTEND_URL}/login', email.body)
-        self.assertIn('/revoke?token=', email.body)
+        
+        # Verify alternative HTML body contains credentials and revoke links
+        html_body = email.alternatives[0][0]
+        self.assertIn('<strong>Email:</strong> fadi@cubelogs-tenant.com', html_body)
+        self.assertIn('/revoke?token=', html_body)
+
+        # 6. Verify EmailLog record was created
+        from api.models import EmailLog
+        log = EmailLog.objects.filter(recipient='fadi@cubelogs-tenant.com', template_type='WELCOME').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.status, 'SENT')  # celery runs synchronously in eager test mode
+        self.assertIsNotNone(log.password)
 
 
 from unittest.mock import patch
@@ -1128,6 +1137,7 @@ class BillingAcceleratedTests(APITestCase):
         )
         self.wallet.balance = Decimal('0.00')
         self.wallet.save()
+        mail.outbox = []
 
     def test_accelerated_pipeline_flow(self):
         from api.tasks import sweep_workspace_subscriptions
@@ -1393,6 +1403,48 @@ class EmployeeBulkUploadTests(APITestCase):
         # Reload from DB and verify
         emp.refresh_from_db()
         self.assertEqual(emp.raw_password, 'NewPassword456')
+
+
+class CompanyRegistrationTests(APITestCase):
+    def setUp(self):
+        from django.core import mail
+        from api.models import Employee
+        self.operator = Employee.objects.create_user(
+            email='operator@cubelogs.com',
+            password='Password123',
+            isSuperAdmin=True
+        )
+        mail.outbox = []
+        self.client.force_login(self.operator)
+
+    def test_backoffice_register_company_sends_email_and_logs(self):
+        from django.core import mail
+        from api.models import EmailLog
+
+        url = '/api/register-company/'
+        payload = {
+            'companyName': 'Acme Corp',
+            'adminFullName': 'Acme Owner',
+            'adminEmail': 'owner@acme.com',
+            'adminPhone': '+15555555',
+            'packageName': 'Starter, Attendance'
+        }
+        
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        
+        # Verify exactly 1 email sent in outbox
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertEqual(email.to, ['owner@acme.com'])
+        self.assertIn('Welcome to CubeLogs - Your Workspace is Ready!', email.subject)
+        
+        # Verify exactly 1 EmailLog record was created
+        logs = EmailLog.objects.filter(recipient='owner@acme.com', template_type='WELCOME')
+        self.assertEqual(logs.count(), 1)
+        log = logs.first()
+        self.assertEqual(log.status, 'SENT')
+        self.assertEqual(log.password, 'Welcome@123')
 
 
 

@@ -195,9 +195,7 @@ Welcome to our company! An administrator has created an account for you on CubeL
 
 Click the link below to instantly log in to your dashboard:
 Magic Login Link: {magic_login_url}
-
-Using your secure credentials:
-Username: {employee.username}
+Email: {employee.email}
 Password: {password_val}
 
 ---
@@ -235,14 +233,13 @@ It's Not Me: {revoke_url}
                 <div class="content">
                     <h2>Hello,</h2>
                     <p>Welcome to our company! An administrator has created a new account for you on the CubeLogs platform.</p>
-                    <p>You can instantly log in to your dashboard by clicking the magic link below:</p>
-                    <div style="text-align: center;">
-                        <a href="{magic_login_url}" class="btn">Go to Dashboard</a>
-                    </div>
-                    <p>Or manually login at {manual_login_url} using your secure credentials:</p>
-                    <div class="credentials">
-                        <p><strong>Username:</strong> {employee.username}</p>
-                        <p><strong>Password:</strong> {password_val}</p>
+                    <p>You can instantly log in to your dashboard by clicking the button below:</p>
+                    <div style="text-align: center; margin: 24px 0;">
+                        <a href="{magic_login_url}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Go to Dashboard</a>
+                        <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+                            <p style="margin: 4px 0;"><strong>Email:</strong> {employee.email}</p>
+                            <p style="margin: 4px 0;"><strong>Password:</strong> {password_val}</p>
+                        </div>
                     </div>
                     
                     <div class="revoke-section">

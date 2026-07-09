@@ -6,21 +6,14 @@ from api.models import Employee
 
 @receiver(post_save, sender=Employee)
 def send_employee_registration_email(sender, instance, created, **kwargs):
-    if not created or not instance.email:
+    if not created or not instance.email or instance.isSuperAdmin:
         return
     
     from api.models import EmailLog
     from api.tasks import send_queued_email_task
     
     raw_password = getattr(instance, '_raw_password', None)
-    credentials_html = ""
-    if raw_password:
-        credentials_html = f"""
-        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 20px; border-radius: 8px; margin-top: 20px; margin-bottom: 20px;">
-            <p style="margin: 6px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 14px; color: #0f172a;"><strong>Username:</strong> {instance.username}</p>
-            <p style="margin: 6px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 14px; color: #0f172a;"><strong>Password:</strong> {raw_password}</p>
-        </div>
-        """
+    password_val = raw_password if raw_password else "Use your existing password"
 
     subject = "Welcome to CubeLogs!"
     dashboard_url = f"{getattr(settings, 'FRONTEND_URL', 'https://cubelogs-dashboard.vercel.app')}/login"
@@ -49,10 +42,12 @@ def send_employee_registration_email(sender, instance, created, **kwargs):
             <div class="content">
                 <h2>Hello {instance.first_name or 'User'},</h2>
                 <p>Your CubeLogs account has been successfully created. We are excited to have you on board!</p>
-                {credentials_html}
-                <p>Click the button below to log in straight to your dashboard:</p>
-                <div style="text-align: center;">
-                    <a href="{dashboard_url}" class="btn">Go to Dashboard</a>
+                <div style="text-align: center; margin: 24px 0;">
+                    <a href="{dashboard_url}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Go to Dashboard</a>
+                    <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+                        <p style="margin: 4px 0;"><strong>Email:</strong> {instance.email}</p>
+                        <p style="margin: 4px 0;"><strong>Password:</strong> {password_val}</p>
+                    </div>
                 </div>
                 <p style="margin-top: 32px; color: #475569;">Best regards,<br><strong style="color: #0f172a;">The CubeLogs Team</strong></p>
             </div>
