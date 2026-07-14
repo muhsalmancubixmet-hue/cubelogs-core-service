@@ -21,7 +21,8 @@ from django.conf.urls.static import static
 from django.contrib.auth import logout
 from django.views.generic import RedirectView
 
-from api.views import backoffice_view, stripe_webhook, backoffice_login_view, backoffice_logout_view
+from users.api.v1.views import backoffice_view, backoffice_login_view, backoffice_logout_view
+from subscribers.api.v1.views import stripe_webhook
 
 def custom_admin_login(request, extra_context=None):
     if request.user.is_authenticated and not request.user.is_staff:
@@ -37,7 +38,11 @@ urlpatterns = [
     path('backoffice/logout/', backoffice_logout_view, name='backoffice_logout'),
     path('backoffice/stripe-webhook/', stripe_webhook, name='stripe-webhook'),
     path('webhook/', stripe_webhook, name='stripe-webhook-root'),
-    path('api/', include('api.urls')),
+    path('api/', include('users.api.urls')),
+    path('api/', include('attendance.api.urls')),
+    path('api/', include('company.api.urls')),
+    path('api/', include('subscribers.api.urls')),
+    path('api/', include('tasks.api.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 

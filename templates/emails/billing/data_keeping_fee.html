@@ -1,0 +1,22 @@
+{% extends "emails/base.html" %}
+
+{% block header_class %}header-slate{% endblock %}
+{% block header_title %}Service Invoice{% endblock %}
+
+{% block content %}
+<h2>Hello {{ employee_name }},</h2>
+<p>This is your invoice receipt for the monthly data keeping and maintenance charge. This fee ensures your historical logs, system metrics, and data are safely backed up.</p>
+<table class="invoice-table">
+    <thead>
+        <tr><th>Description</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>Fee Type</strong></td><td>Monthly Data Keeping & Maintenance Fee</td></tr>
+        <tr><td><strong>Charged Amount</strong></td><td>₹{{ fee_amount }} INR</td></tr>
+        <tr><td><strong>Remaining Wallet Balance</strong></td><td><strong>{{ remaining_balance }}</strong></td></tr>
+        <tr><td><strong>Billing Cycle</strong></td><td>Monthly Maintenance</td></tr>
+        <tr><td><strong>Date</strong></td><td>{{ tx_date }}</td></tr>
+    </tbody>
+</table>
+<p>If you have any questions, please reach out to billing support.</p>
+{% endblock %}

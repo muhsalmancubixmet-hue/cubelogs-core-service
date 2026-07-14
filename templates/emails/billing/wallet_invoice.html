@@ -1,0 +1,22 @@
+{% extends "emails/base.html" %}
+
+{% block header_class %}header-dark{% endblock %}
+{% block header_title %}Payment Receipt{% endblock %}
+
+{% block content %}
+<h2>Hello {{ employee_name }},</h2>
+<p>A payment has been successfully charged from your prepaid balance. Below are your debit transaction details:</p>
+<table class="invoice-table">
+    <thead>
+        <tr><th>Description</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>Transaction Type</strong></td><td>Debit (Prepaid Usage Charge)</td></tr>
+        <tr><td><strong>Charged Amount</strong></td><td>₹{{ amount }} INR</td></tr>
+        <tr><td><strong>Remaining Wallet Balance</strong></td><td><strong>₹{{ current_balance }} INR</strong></td></tr>
+        <tr><td><strong>Date</strong></td><td>{{ tx_date }}</td></tr>
+    </tbody>
+</table>
+<p>If you have any questions regarding this billing transaction, please reach out to support.</p>
+<p style="margin-top: 32px; color: #475569;">Best regards,<br><strong style="color: #0F172A;">The CubeLogs Billing Team</strong></p>
+{% endblock %}

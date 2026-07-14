@@ -1,0 +1,16 @@
+{% extends "emails/base.html" %}
+
+{% block header_title %}Welcome to CubeLogs{% endblock %}
+
+{% block content %}
+<h2>Hello {{ employee_name }},</h2>
+<p>Your CubeLogs account has been successfully created. We are excited to have you on board!</p>
+<div class="text-center" style="margin: 24px 0;">
+    <a href="{{ dashboard_url }}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Go to Dashboard</a>
+    <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+        <p style="margin: 4px 0;"><strong>Email:</strong> {{ email }}</p>
+        <p style="margin: 4px 0;"><strong>Password:</strong> {{ password }}</p>
+    </div>
+</div>
+<p style="margin-top: 32px; color: #475569;">Best regards,<br><strong style="color: #0F172A;">The CubeLogs Team</strong></p>
+{% endblock %}

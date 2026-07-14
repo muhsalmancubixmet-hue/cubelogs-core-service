@@ -1,0 +1,15 @@
+{% extends "emails/base.html" %}
+
+{% block header_class %}header-red{% endblock %}
+{% block header_title %}Subscription Expired{% endblock %}
+
+{% block content %}
+<h2>Hello {{ employee_name }},</h2>
+<p>We regret to inform you that your automated subscription renewal has failed and your workspace access has expired due to insufficient wallet funds.</p>
+<div class="expired-box">
+    <p><strong>Expired Subscription Plan:</strong> {{ subscription_name }}</p>
+    <p><strong>Status:</strong> Suspended / Expired</p>
+</div>
+<p>To restore subscription access and reactivate premium features, please top up your prepaid wallet balance immediately.</p>
+<p style="margin-top: 32px; color: #475569;">Thank you,<br><strong style="color: #0F172A;">The CubeLogs Billing Team</strong></p>
+{% endblock %}

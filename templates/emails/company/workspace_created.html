@@ -1,0 +1,17 @@
+{% extends "emails/base.html" %}
+
+{% block header_title %}CubeLogs Workspace{% endblock %}
+
+{% block content %}
+<h2>Hello {{ admin_first_name }},</h2>
+<p>Your CubeLogs workspace for <strong>'{{ company_name }}'</strong> has been successfully registered and provisioned! We are thrilled to have you on board.</p>
+<p>You can securely log in to your dashboard by clicking the button below:</p>
+<div class="text-center" style="margin: 24px 0;">
+    <a href="{{ login_link }}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Log In to Workspace</a>
+    <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+        <p style="margin: 4px 0;"><strong>Email:</strong> {{ admin_email }}</p>
+        <p style="margin: 4px 0;"><strong>Password:</strong> {{ admin_password }}</p>
+    </div>
+</div>
+<p style="margin-top: 32px; color: #475569;">Welcome aboard,<br><strong style="color: #0F172A;">The CubeLogs Team</strong></p>
+{% endblock %}

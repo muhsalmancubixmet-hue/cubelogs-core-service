@@ -1,0 +1,45 @@
+{
+  "modules": [
+    {
+      "id": "attendance",
+      "enabled": true,
+      "metadata": {
+        "name": "Attendance Management",
+        "icon": "AttendanceIcon",
+        "required_subscription_flag": "is_attendance_enabled",
+        "price": "99.00"
+      },
+      "functional_capabilities": [
+        { "id": "attendance:staff", "label": "Attendance & Clocking", "path": "/attendance", "tab": "" },
+        { "id": "leaves:apply", "label": "Apply Leave Form", "path": "/attendance", "tab": "leaves-apply" },
+        { "id": "leaves:approve", "label": "Leave Approval Portal", "path": "/attendance", "tab": "leaves-approve" },
+        { "id": "leaves:manage", "label": "Configure Leave Types", "path": "/attendance", "tab": "leaves-manage" },
+        { "id": "holidays:manage", "label": "Configure Holidays", "path": "/holidays", "tab": "manage" },
+        { "id": "holidays:view", "label": "View Holiday Calendar", "path": "/holidays", "tab": "view" },
+        { "id": "attendance:management_portal", "label": "Attendance Management Portal", "path": "/attendance/management-portal", "tab": "" }
+      ],
+      "dynamic_sub_feature_gates": {
+        "geofencing": true,
+        "biometrics": false
+      }
+    },
+    {
+      "id": "tasks",
+      "enabled": true,
+      "metadata": {
+        "name": "Project Management",
+        "icon": "TasksIcon",
+        "required_subscription_flag": "is_project_enabled",
+        "price": "56.00"
+      },
+      "functional_capabilities": [
+        { "id": "tasks:create", "label": "Add Task Workspace", "path": "/tasks", "tab": "add" },
+        { "id": "tasks:view", "label": "My Tasks View", "path": "/tasks", "tab": "my" }
+      ],
+      "dynamic_sub_feature_gates": {
+        "kanban": true,
+        "time_tracking": false
+      }
+    }
+  ]
+}

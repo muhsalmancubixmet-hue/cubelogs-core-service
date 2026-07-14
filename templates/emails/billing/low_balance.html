@@ -1,0 +1,15 @@
+{% extends "emails/base.html" %}
+
+{% block header_class %}header-orange{% endblock %}
+{% block header_title %}Low Wallet Balance Alert{% endblock %}
+
+{% block content %}
+<h2>Hello {{ employee_name }},</h2>
+<p>This is an automated notification that your prepay billing wallet balance is low or empty.</p>
+<div class="alert-box">
+    <p>Current Balance</p>
+    <p><strong>{{ balance }}</strong></p>
+</div>
+<p>Please top up your wallet immediately to ensure uninterrupted subscription services for your workspace.</p>
+<p style="margin-top: 32px; color: #475569;">Thank you,<br><strong style="color: #0F172A;">The CubeLogs Billing Team</strong></p>
+{% endblock %}

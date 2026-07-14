@@ -1,0 +1,20 @@
+{% extends "emails/base.html" %}
+
+{% block header_title %}Welcome to CubeLogs{% endblock %}
+
+{% block content %}
+<h2>Hello,</h2>
+<p>Welcome to our company! An administrator has created a new account for you on the CubeLogs platform.</p>
+<p>You can securely log in to your dashboard by clicking the button below:</p>
+<div class="text-center" style="margin: 24px 0;">
+    <a href="{{ magic_login_url }}" class="btn" style="margin: 0 auto 12px auto; display: inline-block;">Log In to Dashboard</a>
+    <div style="font-size: 14px; color: #475569; margin-top: 8px; text-align: center;">
+        <p style="margin: 4px 0;"><strong>Email:</strong> {{ email }}</p>
+        <p style="margin: 4px 0;"><strong>Password:</strong> {{ password }}</p>
+    </div>
+</div>
+<div class="revoke-section">
+    <p style="color: #64748B; font-size: 14px; margin-bottom: 10px;">If you did not expect this or believe it was a mistake, please revoke this registration instantly:</p>
+    <a href="{{ revoke_url }}" class="btn-danger">It's Not Me - Revoke</a>
+</div>
+{% endblock %}
