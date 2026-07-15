@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon
+from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon, GlobalBillingSettings
 from users.models import Employee
 from core.utils import extract_youtube_id
 
@@ -195,4 +195,10 @@ class CouponSerializer(serializers.ModelSerializer):
 class BackofficeCouponSerializer(serializers.ModelSerializer):
     class Meta:
         model = BackofficeCoupon
+        fields = '__all__'
+
+
+class GlobalBillingSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GlobalBillingSettings
         fields = '__all__'

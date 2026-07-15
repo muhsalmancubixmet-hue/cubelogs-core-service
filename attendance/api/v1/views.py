@@ -31,6 +31,7 @@ from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 
 from core.mixins import FilterMixinNew, TenantScopedViewSetMixin
+from core.permissions import HasRequiredPermission
 from core.module_registry.loader import load_modules
 from users.models import Employee, PERMISSION_FLAGS, Template
 from core.models import AuditLog, OrgSettings, Organization
@@ -55,21 +56,44 @@ from attendance.filters import (
 class AttendanceLogViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = AttendanceLog.objects.all().order_by('-date', '-id')
     serializer_class = AttendanceLogSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = AttendanceLogFilter
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_authenticated and not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
+            user_perms = getattr(user, 'permissions', [])
+            if 'attendance:admin' not in user_perms and 'attendance:management_portal' not in user_perms:
+                qs = qs.filter(employee=user)
+        return qs
 
+    def get_permissions(self):
+        if self.action in ['clock_in', 'clock_out']:
+            return [permissions.IsAuthenticated()]
+        if self.action in ['list', 'retrieve']:
+            return [permissions.IsAuthenticated()]
+        self.required_permission = ['attendance:admin', 'attendance:management_portal']
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
     @action(detail=False, methods=['post'], url_path='clock-in')
     def clock_in(self, request):
         employee_id = request.data.get('employeeId') or request.user.id
-        verification_data = request.data.get('verificationData')
+        # Prevent IDOR
+        if int(employee_id) != request.user.id:
+            user_perms = getattr(request.user, 'permissions', [])
+            is_admin = request.user.is_superuser or getattr(request.user, 'isSuperAdmin', False) or 'attendance:admin' in user_perms or 'attendance:management_portal' in user_perms
+            if not is_admin:
+                return Response({'error': 'You do not have permission to clock in on behalf of other employees'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             employee = Employee.objects.get(id=employee_id)
         except Employee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Verify organization matches
+        if employee.organization != request.user.organization:
+            return Response({'error': 'Employee not found in your organization'}, status=status.HTTP_403_FORBIDDEN)
 
         today = datetime_date.today()
 
@@ -82,7 +106,7 @@ class AttendanceLogViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.Mo
 
         coords = {}
         photo = None
-        if verification_data:
+        if verification_data := request.data.get('verificationData'):
             coords = verification_data.get('coords', {})
             photo = verification_data.get('photo')
 
@@ -119,11 +143,21 @@ class AttendanceLogViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.Mo
     @action(detail=False, methods=['post'], url_path='clock-out')
     def clock_out(self, request):
         employee_id = request.data.get('employeeId') or request.user.id
+        # Prevent IDOR
+        if int(employee_id) != request.user.id:
+            user_perms = getattr(request.user, 'permissions', [])
+            is_admin = request.user.is_superuser or getattr(request.user, 'isSuperAdmin', False) or 'attendance:admin' in user_perms or 'attendance:management_portal' in user_perms
+            if not is_admin:
+                return Response({'error': 'You do not have permission to clock out on behalf of other employees'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             employee = Employee.objects.get(id=employee_id)
         except Employee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Verify organization matches
+        if employee.organization != request.user.organization:
+            return Response({'error': 'Employee not found in your organization'}, status=status.HTTP_403_FORBIDDEN)
 
         # Find active clock-in log (where clockOut is null)
         log = AttendanceLog.objects.filter(employee=employee, clockOut__isnull=True).order_by('-date', '-id').first()
@@ -162,7 +196,8 @@ class AttendanceLogViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.Mo
 # AttendanceApprovalView: API endpoint for managers to approve or reject employee clock logs.
 # --------------------------------------------------------------------------------
 class AttendanceApprovalView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+    required_permission = ['attendance:admin', 'attendance:management_portal']
 
     ALLOWED_STATUSES = ['Approved', 'Late', 'Half Day', 'Absent', 'Pending Approval']
 
@@ -425,9 +460,15 @@ def calculate_recurring_holidays(organization, start_year, end_year):
 class HolidayViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Holiday.objects.all().order_by('date')
     serializer_class = HolidaySerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = HolidayFilter
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            self.required_permission = ['holidays:view', 'holidays:manage', 'attendance:staff']
+        else:
+            self.required_permission = 'holidays:manage'
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
 
     def list(self, request, *args, **kwargs):
@@ -517,12 +558,19 @@ class HolidaySettingsView(APIView):
 # --------------------------------------------------------------------------------
 # TemplateViewSet: ViewSet managing security role template profiles.
 # --------------------------------------------------------------------------------
-class TemplateViewSet(FilterMixinNew, viewsets.ModelViewSet):
+class TemplateViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Template.objects.all().order_by('name')
     serializer_class = TemplateSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = TemplateFilter
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            # Any authenticated user can read templates (needed for settings page + employee onboarding)
+            return [permissions.IsAuthenticated()]
+        # Create / update / delete requires admin:templates
+        self.required_permission = 'admin:templates'
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
 
 # --------------------------------------------------------------------------------
@@ -531,21 +579,34 @@ class TemplateViewSet(FilterMixinNew, viewsets.ModelViewSet):
 class OfficeLocationViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = OfficeLocation.objects.all().order_by('id')
     serializer_class = OfficeLocationSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = OfficeLocationFilter
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            # Any authenticated user can read locations (needed on settings page + clock-in)
+            return [permissions.IsAuthenticated()]
+        self.required_permission = 'locations:manage'
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+
 
 
 
 # --------------------------------------------------------------------------------
 # ScheduleViewSet: ViewSet managing shift times mapped to specific roles.
 # --------------------------------------------------------------------------------
-class ScheduleViewSet(FilterMixinNew, viewsets.ModelViewSet):
+class ScheduleViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Schedule.objects.all().order_by('designation')
     serializer_class = ScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = ScheduleFilter
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            self.required_permission = ['attendance:staff', 'attendance:management_portal']
+        else:
+            self.required_permission = 'attendance:management_portal'
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
 
 
@@ -555,7 +616,12 @@ class ScheduleViewSet(FilterMixinNew, viewsets.ModelViewSet):
 class OrgSettingsViewSet(viewsets.ModelViewSet):
     queryset = OrgSettings.objects.all()
     serializer_class = OrgSettingsSerializer
-    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'current_settings'] and self.request.method == 'GET':
+            return [permissions.IsAuthenticated()]
+        self.required_permission = ['settings:branding', 'settings:billing', 'attendance:management_portal']
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
     def get_object(self):
         user = self.request.user
@@ -672,9 +738,15 @@ class PermissionsConfigView(APIView):
 class LeaveTypeViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = LeaveType.objects.all().order_by('-id')
     serializer_class = LeaveTypeSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = LeaveTypeFilter
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            self.required_permission = ['leaves:apply', 'leaves:manage']
+        else:
+            self.required_permission = 'leaves:manage'
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -719,9 +791,21 @@ class LeaveTypeViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelV
 class LeaveViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Leave.objects.all().order_by('-id')
     serializer_class = LeaveSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = LeaveFilter
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_authenticated and not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
+            user_perms = getattr(user, 'permissions', [])
+            if 'leaves:approve' not in user_perms and 'leaves:manage' not in user_perms:
+                qs = qs.filter(employee=user)
+        return qs
+
+    def get_permissions(self):
+        from core.permissions import IsLeaveOwnerOrManager
+        return [permissions.IsAuthenticated(), IsLeaveOwnerOrManager()]
 
 
 

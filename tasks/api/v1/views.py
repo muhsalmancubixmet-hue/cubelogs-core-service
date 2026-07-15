@@ -24,15 +24,23 @@ from tasks.api.v1.serializers import TaskSerializer
 class TaskViewSet(FilterMixinNew, viewsets.ModelViewSet):
     queryset = Task.objects.all().order_by('-id')
     serializer_class = TaskSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_class = TaskFilter
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if self.request.user.is_authenticated:
-            qs = qs.filter(assignedTo__organization=self.request.user.organization)
+        user = self.request.user
+        if user.is_authenticated:
+            qs = qs.filter(assignedTo__organization=user.organization)
+            if not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
+                user_perms = getattr(user, 'permissions', [])
+                if 'tasks:create' not in user_perms:
+                    qs = qs.filter(assignedTo=user)
         return qs
+
+    def get_permissions(self):
+        from core.permissions import IsTaskOwnerOrManager
+        return [permissions.IsAuthenticated(), IsTaskOwnerOrManager()]
 
 
     def perform_create(self, serializer):

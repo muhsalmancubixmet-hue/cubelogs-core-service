@@ -741,6 +741,12 @@
         </span>
         <span>Testimonials</span>
       </div>
+      <div class="nav-link" id="nav-billing_settings" onclick="switchTab('billing_settings')">
+        <span class="nav-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </span>
+        <span>Billing Settings</span>
+      </div>
 
       <div class="nav-category">System Admin</div>
       <div class="nav-link" id="nav-staff" onclick="switchTab('staff')">
@@ -1153,6 +1159,65 @@
     </section>
 
 
+    <!-- TAB: Billing Settings -->
+    <section id="tab-billing_settings" class="tab-content">
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Global Billing Settings Configuration</h2>
+        </div>
+        <form id="global-billing-form" onsubmit="saveGlobalBillingSettings(event)" style="padding: 20px;">
+          <div class="form-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Monthly Base Subscription Price *</label>
+              <input type="number" step="0.01" id="g-sub-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Monthly Data Retention Rent *</label>
+              <input type="number" step="0.01" id="g-rent-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Attendance Module Price *</label>
+              <input type="number" step="0.01" id="g-attendance-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Tasks Module Price *</label>
+              <input type="number" step="0.01" id="g-tasks-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Employee Seat Price *</label>
+              <input type="number" step="0.01" id="g-employee-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Grace Period Duration (Days) *</label>
+              <input type="number" id="g-grace-days" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Reminder Email Days Before *</label>
+              <input type="number" id="g-reminder-days" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Automatic Deduction Date (Day of Month) *</label>
+              <input type="number" min="1" max="28" id="g-deduct-day" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Invoice Generation Date (Day of Month) *</label>
+              <input type="number" min="1" max="28" id="g-invoice-day" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Currency *</label>
+              <input type="text" id="g-currency" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+            <div class="form-group">
+              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Tax Percentage (%) *</label>
+              <input type="number" step="0.01" id="g-tax" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top: 24px; padding: 12px 24px;">Save Billing Settings</button>
+        </form>
+      </div>
+    </section>
+
+
     <!-- TAB 5: Coupon Engine -->
     <section id="tab-coupons" class="tab-content">
       <div class="panel">
@@ -1506,7 +1571,8 @@
         testimonials: 'Client Testimonials Panel',
         coupons: 'Coupon Management Engine',
         staff: 'Staff Management Portal',
-        audit_logs: 'System Audit Logs Trail'
+        audit_logs: 'System Audit Logs Trail',
+        billing_settings: 'Global Billing Settings'
       };
       document.getElementById('current-tab-title').textContent = titleMap[tabId] || 'Portal Management';
       
@@ -1526,6 +1592,7 @@
       if (tabId === 'coupons') fetchCoupons();
       if (tabId === 'staff') { fetchOrganizations(); fetchStaff(); populatePermissionsCheckboxes(); }
       if (tabId === 'audit_logs') { fetchOrganizations(); fetchAuditLogs(); }
+      if (tabId === 'billing_settings') fetchGlobalBillingSettings();
     }
 
     // 1. Packages Logic
@@ -2343,7 +2410,7 @@
           permBadges = '<span style="color:var(--text-light); font-size:0.8rem;">None</span>';
         }
         
-        const isRoot = emp.email === 'salmankcsiju@gmail.com';
+        const isRoot = emp.is_superuser || (emp.isSuperAdmin && !emp.organization);
         const deleteButton = isRoot ? '' : `<button class="btn btn-danger btn-sm" onclick="deleteStaff(${emp.id})">Remove</button>`;
         
         const row = document.createElement('tr');
@@ -3030,6 +3097,52 @@
       }
     }
 
+    // 11. Global Billing Settings Logic
+    async function fetchGlobalBillingSettings() {
+      try {
+        const data = await apiFetch('/api/backoffice/billing-settings/');
+        // Pre-fill form fields
+        document.getElementById('g-sub-price').value = data.monthly_subscription_price || '100.00';
+        document.getElementById('g-rent-price').value = data.monthly_data_rent || '50.00';
+        document.getElementById('g-attendance-price').value = data.attendance_module_price || '100.00';
+        document.getElementById('g-tasks-price').value = data.tasks_module_price || '100.00';
+        document.getElementById('g-employee-price').value = data.employee_seat_price || '100.00';
+        document.getElementById('g-grace-days').value = data.grace_period_days || '5';
+        document.getElementById('g-reminder-days').value = data.reminder_email_days_before || '1';
+        document.getElementById('g-deduct-day').value = data.auto_deduction_day || '5';
+        document.getElementById('g-invoice-day').value = data.invoice_generation_day || '1';
+        document.getElementById('g-currency').value = data.currency || 'INR';
+        document.getElementById('g-tax').value = data.tax_percentage || '0.00';
+      } catch (err) {
+        showNotification('Failed to fetch billing settings: ' + err.message, 'error');
+      }
+    }
+
+    async function saveGlobalBillingSettings(e) {
+      e.preventDefault();
+      const payload = {
+        monthly_subscription_price: parseFloat(document.getElementById('g-sub-price').value),
+        monthly_data_rent: parseFloat(document.getElementById('g-rent-price').value),
+        attendance_module_price: parseFloat(document.getElementById('g-attendance-price').value),
+        tasks_module_price: parseFloat(document.getElementById('g-tasks-price').value),
+        employee_seat_price: parseFloat(document.getElementById('g-employee-price').value),
+        grace_period_days: parseInt(document.getElementById('g-grace-days').value),
+        reminder_email_days_before: parseInt(document.getElementById('g-reminder-days').value),
+        auto_deduction_day: parseInt(document.getElementById('g-deduct-day').value),
+        invoice_generation_day: parseInt(document.getElementById('g-invoice-day').value),
+        currency: document.getElementById('g-currency').value,
+        tax_percentage: parseFloat(document.getElementById('g-tax').value)
+      };
+
+      try {
+        await apiFetch('/api/backoffice/billing-settings/', 'POST', payload);
+        showNotification('Billing settings saved successfully!');
+        fetchGlobalBillingSettings();
+      } catch (err) {
+        showNotification('Failed to save settings: ' + err.message, 'error');
+      }
+    }
+
     // Bootstrap data loading on page load
     document.addEventListener('DOMContentLoaded', () => {
       // Fetch user email if possible, or leave default
@@ -3041,7 +3154,7 @@
       
       // Parse backoffice tab permissions from view context
       let userPermissions = JSON.parse('{{ user_permissions_json|escapejs }}');
-      const allTabs = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs'];
+      const allTabs = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings'];
       const hasAnyBackofficePerm = allTabs.some(t => userPermissions.includes(t));
       if (!hasAnyBackofficePerm) {
         userPermissions = allTabs;

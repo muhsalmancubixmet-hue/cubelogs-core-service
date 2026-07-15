@@ -5,6 +5,7 @@ from subscribers.api.v1.views import (
     DynamicCheckoutView, ConfirmSubscriptionView, BackofficeRegisterCompanyView,
     BackofficeOrganizationListView, stripe_webhook,
     WalletViewSet, BackofficePaymentListView, CouponViewSet, BackofficeCouponViewSet,
+    GlobalBillingSettingsViewSet,
 )
 
 router = DefaultRouter()
@@ -13,6 +14,7 @@ router.register('subscribers', SubscriberAccountViewSet, basename='subscriber')
 router.register('wallet', WalletViewSet, basename='wallet')
 router.register('coupons', CouponViewSet, basename='coupon')
 router.register('backoffice/coupons', BackofficeCouponViewSet, basename='backoffice-coupon')
+router.register('backoffice/billing-settings', GlobalBillingSettingsViewSet, basename='backoffice-billing-settings')
 
 urlpatterns = [
     path('subscription/dynamic-checkout/', DynamicCheckoutView.as_view(), name='dynamic_checkout'),

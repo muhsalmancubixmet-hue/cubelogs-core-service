@@ -145,3 +145,24 @@ class Coupon(BaseModel):
     def __str__(self):
         return f"{self.code} ({self.discountValue} {self.discountType})"
 
+
+# GlobalBillingSettings Model: Configurable settings for monthly billing values, cycles, tax and grace period
+class GlobalBillingSettings(BaseModel):
+    monthly_subscription_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
+    monthly_data_rent = models.DecimalField(max_digits=20, decimal_places=2, default=50.00)
+    attendance_module_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
+    tasks_module_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
+    employee_seat_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
+    grace_period_days = models.IntegerField(default=5)
+    reminder_email_days_before = models.IntegerField(default=1)
+    auto_deduction_day = models.IntegerField(default=5)
+    invoice_generation_day = models.IntegerField(default=1)
+    currency = models.CharField(max_length=10, default='INR')
+    tax_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+
+    class Meta:
+        db_table = 'api_globalbillingsettings'
+
+    def __str__(self):
+        return f"Global Billing Settings (ID={self.id})"
+

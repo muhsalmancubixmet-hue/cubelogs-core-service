@@ -12,7 +12,7 @@ from core.tasks import EmailService
 from company.models import (
     Lead, LeadHistory
 )
-from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, MonthlyInvoice, WalletTransaction
+from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, MonthlyInvoice, WalletTransaction, GlobalBillingSettings
 
 from core.models import Organization, OrgSettings
 from users.models import Employee, PERMISSION_FLAGS
@@ -61,23 +61,45 @@ class BillingService:
                     details="Automated wallet deduction: Outstanding dues cleared on top-up.",
                 )
 
+                was_inactive = False
                 if wallet.organization and wallet.organization.settings:
                     settings_obj = wallet.organization.settings
+                    was_inactive = settings_obj.subscriptionStatus in ['Unpaid', 'Suspended', 'Restricted']
                     settings_obj.subscriptionStatus = 'Active'
+                    # Extend validity when reactivated (in production standard logic is 30 days)
+                    settings_obj.subscriptionDays = 30
+                    if settings_obj.subscriptionExpiresAt:
+                        # Extend subscription validity by 30 days if not expired, or set to 30 days from now
+                        if settings_obj.subscriptionExpiresAt > timezone.now():
+                            settings_obj.subscriptionExpiresAt = settings_obj.subscriptionExpiresAt + timezone.timedelta(days=30)
+                        else:
+                            settings_obj.subscriptionExpiresAt = timezone.now() + timezone.timedelta(days=30)
+                    else:
+                        settings_obj.subscriptionExpiresAt = timezone.now() + timezone.timedelta(days=30)
                     settings_obj.save()
 
                 superadmin = Employee.objects.filter(
                     organization=wallet.organization, isSuperAdmin=True
                 ).first()
                 if superadmin:
-                    subject = f"Notice: Dues Paid & Workspace Activated for {wallet.organization.name}"
-                    message = (
-                        f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
-                        f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully paid after your recent top-up.\n"
-                        f"Your workspace is fully active.\n"
-                        f"Updated Wallet Balance: ₹{wallet.balance} INR.\n\n"
-                        f"CubeLogs Billing Team"
-                    )
+                    if was_inactive:
+                        subject = f"Workspace Reactivated: CubeLogs"
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully paid, and your workspace {wallet.organization.name} has been reactivated.\n"
+                            f"All premium modules are now unlocked. All previous employees, attendance sheets, tasks, settings, and workspace data remain fully available exactly as before.\n\n"
+                            f"Updated Wallet Balance: ₹{wallet.balance} INR.\n\n"
+                            f"CubeLogs Billing Team"
+                        )
+                    else:
+                        subject = f"Notice: Dues Paid & Workspace Activated for {wallet.organization.name}"
+                        message = (
+                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
+                            f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully paid after your recent top-up.\n"
+                            f"Your workspace is active.\n"
+                            f"Updated Wallet Balance: ₹{wallet.balance} INR.\n\n"
+                            f"CubeLogs Billing Team"
+                        )
                     try:
                         EmailService.queue_and_send_email(superadmin.email, subject, message)
                     except Exception:

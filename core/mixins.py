@@ -16,21 +16,27 @@ class FilterMixinNew:
     def _get_session_key(self, request):
         """Generates a unique session key for this view and user."""
         view_name = self.__class__.__name__
-        user_id = request.user.id if (request.user and request.user.is_authenticated) else "anonymous"
-        # Combine user ID, view class name, and request path to prevent collision
+        user = getattr(request, 'user', None)
+        user_id = getattr(user, 'id', None) if (user and getattr(user, 'is_authenticated', False)) else "anonymous"
         path = getattr(request, 'path', '')
         return f"filters_{user_id}_{view_name}_{path.replace('/', '_')}"
 
     def _get_session_data(self, request):
         """Retrieves saved filters from the session."""
+        session = getattr(request, 'session', None)
+        if session is None:
+            return {}
         key = self._get_session_key(request)
-        return request.session.get(key, {})
+        return session.get(key, {})
 
     def _save_session_data(self, request, data):
         """Saves current filters to the session."""
+        session = getattr(request, 'session', None)
+        if session is None:
+            return
         key = self._get_session_key(request)
-        request.session[key] = data
-        request.session.modified = True
+        session[key] = data
+        session.modified = True
 
     def get_saved_data(self, request):
         """Public method to fetch currently saved filters for the view."""
@@ -38,10 +44,13 @@ class FilterMixinNew:
 
     def clear_saved_data(self, request):
         """Clears saved filter state for this view."""
+        session = getattr(request, 'session', None)
+        if session is None:
+            return
         key = self._get_session_key(request)
-        if key in request.session:
-            del request.session[key]
-            request.session.modified = True
+        if key in session:
+            del session[key]
+            session.modified = True
 
     def handle_filter_session(self, request):
         """

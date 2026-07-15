@@ -44,9 +44,6 @@ class IsSuperAdminUser(permissions.BasePermission):
         if request.user.organization is not None:
             return True
 
-        # Root admin
-        if request.user.email == 'salmankcsiju@gmail.com':
-            return True
 
         # Backoffice operators — enforce page-level permissions
         user_perms = getattr(request.user, 'permissions', [])
@@ -55,7 +52,7 @@ class IsSuperAdminUser(permissions.BasePermission):
 
         all_backoffice_perms = [
             'packages', 'subscribers', 'leads', 'cms', 'faqs',
-            'testimonials', 'coupons', 'staff', 'audit_logs',
+            'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings',
         ]
         if not any(p in user_perms for p in all_backoffice_perms):
             user_perms = all_backoffice_perms
@@ -68,7 +65,21 @@ class IsSuperAdminUser(permissions.BasePermission):
         elif 'leads' in path:
             return 'leads' in user_perms
         elif 'cms' in path:
+            # Allow reading CMS/FAQs if they have either cms or faqs permission
+            if request.method == 'GET':
+                return 'cms' in user_perms or 'faqs' in user_perms
+            
+            # For CMS writes, determine if they are updating the FAQ copy block
+            try:
+                if isinstance(request.data, dict) and request.data.get('key') == 'faqs':
+                    return 'faqs' in user_perms
+            except Exception:
+                pass
             return 'cms' in user_perms
+        elif 'faqs' in path:
+            return 'faqs' in user_perms
+        elif 'testimonials' in path:
+            return 'testimonials' in user_perms
         elif 'lms' in path:
             return 'lms' in user_perms
         elif 'coupons' in path:
@@ -77,6 +88,8 @@ class IsSuperAdminUser(permissions.BasePermission):
             return 'staff' in user_perms
         elif 'audit-logs' in path:
             return 'audit_logs' in user_perms
+        elif 'billing-settings' in path:
+            return 'billing_settings' in user_perms
 
         return True
 
@@ -199,7 +212,7 @@ class TestimonialViewSet(FilterMixinNew, viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['list', 'retrieve', 'create']:
             return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+        return [IsSuperAdminUser()]
 
 
 # ==============================================================================

@@ -18,13 +18,14 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
-
+from core.permissions import HasRequiredPermission
 from core.mixins import FilterMixinNew
-from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon
+from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon, GlobalBillingSettings
 from subscribers.filters import SubscriptionPackageFilter, SubscriberAccountFilter, CouponFilter, BackofficeCouponFilter
 from subscribers.api.v1.serializers import (
     SubscriptionPackageSerializer, SubscriberAccountSerializer,
-    WalletSerializer, WalletTransactionSerializer, CouponSerializer, BackofficeCouponSerializer
+    WalletSerializer, WalletTransactionSerializer, CouponSerializer, BackofficeCouponSerializer,
+    GlobalBillingSettingsSerializer
 )
 
 from users.models import Employee, PERMISSION_FLAGS
@@ -44,7 +45,7 @@ class IsSuperAdminUser(permissions.BasePermission):
             return True
 
         # Root admin
-        if request.user.email == 'salmankcsiju@gmail.com':
+        if request.user.is_superuser:
             return True
 
         # Backoffice operators — enforce page-level permissions
@@ -54,7 +55,7 @@ class IsSuperAdminUser(permissions.BasePermission):
 
         all_backoffice_perms = [
             'packages', 'subscribers', 'leads', 'cms', 'faqs',
-            'testimonials', 'coupons', 'staff', 'audit_logs',
+            'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings',
         ]
         if not any(p in user_perms for p in all_backoffice_perms):
             user_perms = all_backoffice_perms
@@ -67,7 +68,21 @@ class IsSuperAdminUser(permissions.BasePermission):
         elif 'leads' in path:
             return 'leads' in user_perms
         elif 'cms' in path:
+            # Allow reading CMS/FAQs if they have either cms or faqs permission
+            if request.method == 'GET':
+                return 'cms' in user_perms or 'faqs' in user_perms
+            
+            # For CMS writes, determine if they are updating the FAQ copy block
+            try:
+                if isinstance(request.data, dict) and request.data.get('key') == 'faqs':
+                    return 'faqs' in user_perms
+            except Exception:
+                pass
             return 'cms' in user_perms
+        elif 'faqs' in path:
+            return 'faqs' in user_perms
+        elif 'testimonials' in path:
+            return 'testimonials' in user_perms
         elif 'lms' in path:
             return 'lms' in user_perms
         elif 'coupons' in path:
@@ -76,6 +91,8 @@ class IsSuperAdminUser(permissions.BasePermission):
             return 'staff' in user_perms
         elif 'audit-logs' in path:
             return 'audit_logs' in user_perms
+        elif 'billing-settings' in path:
+            return 'billing_settings' in user_perms
 
         return True
 
@@ -129,7 +146,8 @@ class SubscriberAccountViewSet(FilterMixinNew, viewsets.ModelViewSet):
 # DynamicCheckoutView: API view generating Stripe payment checkout session URLs dynamically.
 # --------------------------------------------------------------------------------
 class DynamicCheckoutView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+    required_permission = 'settings:billing'
 
     def post(self, request):
         employee_count = request.data.get('employee_count')
@@ -266,7 +284,8 @@ class DynamicCheckoutView(APIView):
 # ConfirmSubscriptionView: API view confirming successful deposits or checkout session fulfillments.
 # --------------------------------------------------------------------------------
 class ConfirmSubscriptionView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+    required_permission = 'settings:billing'
 
     def post(self, request):
         session_id = request.data.get('session_id')
@@ -947,7 +966,12 @@ def stripe_webhook(request):
 class WalletViewSet(viewsets.ModelViewSet):
     queryset = Wallet.objects.all().order_by('-id')
     serializer_class = WalletSerializer
-    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ['current_wallet']:
+            return [permissions.IsAuthenticated()]
+        self.required_permission = 'settings:billing'
+        return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -1246,3 +1270,21 @@ class BackofficeOrganizationListView(APIView):
                 'subdomain': org.subdomain,
             })
         return Response(org_list, status=status.HTTP_200_OK)
+
+
+# GlobalBillingSettingsViewSet: ViewSet managing global billing parameters (e.g. pricing, schedules, grace period).
+class GlobalBillingSettingsViewSet(viewsets.ViewSet):
+    permission_classes = [IsSuperAdminUser]
+
+    def list(self, request):
+        settings_instance, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        serializer = GlobalBillingSettingsSerializer(settings_instance)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def create(self, request):
+        settings_instance, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        serializer = GlobalBillingSettingsSerializer(settings_instance, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

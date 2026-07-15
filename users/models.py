@@ -90,11 +90,18 @@ class Employee(AbstractUser):
 # Template Model: Represents permission templates containing authorization presets
 # --------------------------------------------------------------------------------
 class Template(BaseModel):
-    name = models.CharField(max_length=255, unique=True)
+    organization = models.ForeignKey(
+        'core.Organization',
+        null=True, blank=True,
+        on_delete=models.CASCADE,
+        related_name='templates'
+    )
+    name = models.CharField(max_length=255)
     permissions = models.JSONField(default=list, blank=True)
 
     class Meta:
         db_table = 'api_template'
+        unique_together = ('organization', 'name')
 
     def __str__(self):
         return self.name

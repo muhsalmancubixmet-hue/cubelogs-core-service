@@ -26,6 +26,7 @@ from core.mixins import FilterMixinNew
 from users.filters import EmployeeFilter
 from users.api.v1.serializers import EmployeeSerializer, CustomTokenRefreshSerializer
 from core.module_registry.loader import load_modules
+from core.throttling import AuthRateThrottle
 
 
 def _enrich_user_data(user_data, organization):
@@ -67,10 +68,35 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 # --------------------------------------------------------------------------------
-# CustomTokenObtainPairView: View to obtain simple JWT token pair with enriched user profile data.
-# --------------------------------------------------------------------------------
 class CustomTokenObtainPairView(TokenObtainPairView):
+    throttle_classes = [AuthRateThrottle]
     serializer_class = CustomTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            access = response.data.get('access')
+            refresh = response.data.get('refresh')
+            from django.conf import settings
+            is_secure = not getattr(settings, 'is_dev', False)
+
+            response.set_cookie(
+                'cubelogs_access_token',
+                access,
+                httponly=True,
+                secure=is_secure,
+                samesite='Lax',
+                max_age=24 * 3600
+            )
+            response.set_cookie(
+                'cubelogs_refresh_token',
+                refresh,
+                httponly=True,
+                secure=is_secure,
+                samesite='Lax',
+                max_age=30 * 24 * 3600
+            )
+        return response
 
 
 # --------------------------------------------------------------------------------
@@ -89,6 +115,7 @@ class CurrentUserView(APIView):
 # --------------------------------------------------------------------------------
 class MagicLoginView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
@@ -114,11 +141,32 @@ class MagicLoginView(APIView):
                 details="User logged in via magic link authentication."
             )
 
-            return Response({
+            response = Response({
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
                 'user': user_data
             }, status=status.HTTP_200_OK)
+
+            from django.conf import settings
+            is_secure = not getattr(settings, 'is_dev', False)
+
+            response.set_cookie(
+                'cubelogs_access_token',
+                str(refresh.access_token),
+                httponly=True,
+                secure=is_secure,
+                samesite='Lax',
+                max_age=24 * 3600
+            )
+            response.set_cookie(
+                'cubelogs_refresh_token',
+                str(refresh),
+                httponly=True,
+                secure=is_secure,
+                samesite='Lax',
+                max_age=30 * 24 * 3600
+            )
+            return response
 
         except SignatureExpired:
             return Response({'error': 'Magic link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -133,6 +181,7 @@ class MagicLoginView(APIView):
 # --------------------------------------------------------------------------------
 class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         from django.core.signing import TimestampSigner
@@ -183,6 +232,7 @@ If you did not request this, you can safely ignore this email.
 # --------------------------------------------------------------------------------
 class PasswordResetValidateView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
@@ -209,6 +259,7 @@ class PasswordResetValidateView(APIView):
 # --------------------------------------------------------------------------------
 class PasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
@@ -253,6 +304,7 @@ class PasswordResetConfirmView(APIView):
 # --------------------------------------------------------------------------------
 class ChangePasswordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
         current_password = request.data.get('currentPassword')
@@ -289,12 +341,33 @@ class ChangePasswordView(APIView):
         refresh = RefreshToken.for_user(request.user)
         serializer = EmployeeSerializer(request.user)
 
-        return Response({
+        response = Response({
             'message': 'Password has been successfully updated.',
             'refresh': str(refresh),
             'access': str(refresh.access_token),
             'user': serializer.data
         }, status=status.HTTP_200_OK)
+
+        from django.conf import settings
+        is_secure = not getattr(settings, 'is_dev', False)
+
+        response.set_cookie(
+            'cubelogs_access_token',
+            str(refresh.access_token),
+            httponly=True,
+            secure=is_secure,
+            samesite='Lax',
+            max_age=24 * 3600
+        )
+        response.set_cookie(
+            'cubelogs_refresh_token',
+            str(refresh),
+            httponly=True,
+            secure=is_secure,
+            samesite='Lax',
+            max_age=30 * 24 * 3600
+        )
+        return response
 
 
 # --------------------------------------------------------------------------------
@@ -323,7 +396,7 @@ class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
     def check_permissions(self, request):
         super().check_permissions(request)
         if request.user.is_authenticated and request.user.isSuperAdmin and request.user.organization is None:
-            if request.user.email == 'salmankcsiju@gmail.com':
+            if request.user.is_superuser:
                 return
             user_perms = getattr(request.user, 'permissions', [])
             if not isinstance(user_perms, list) or 'staff' not in user_perms:
@@ -583,9 +656,9 @@ def backoffice_view(request):
     if not isinstance(user_perms, list):
         user_perms = []
 
-    all_backoffice_perms = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs']
+    all_backoffice_perms = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings']
     has_any_backoffice_perm = any(p in user_perms for p in all_backoffice_perms)
-    if not has_any_backoffice_perm or request.user.email == 'salmankcsiju@gmail.com' or request.user.organization is not None:
+    if not has_any_backoffice_perm or request.user.is_superuser or request.user.organization is not None:
         user_perms = all_backoffice_perms
 
     context = {
@@ -600,6 +673,12 @@ def backoffice_login_view(request):
 
     error = None
     if request.method == 'POST':
+        throttle = AuthRateThrottle()
+        if not throttle.allow_request(request, None):
+            return render(request, 'backoffice_login.html', {
+                'error': 'Too many login attempts. Please try again in 1 minute.'
+            }, status=429)
+
         email = request.POST.get('username')
         password = request.POST.get('password')
 
@@ -628,3 +707,58 @@ def backoffice_login_view(request):
 def backoffice_logout_view(request):
     logout(request)
     return redirect('/backoffice/login/')
+
+
+from rest_framework_simplejwt.views import TokenRefreshView
+
+class CustomTokenRefreshView(TokenRefreshView):
+    throttle_classes = [AuthRateThrottle]
+
+    def post(self, request, *args, **kwargs):
+        # Extract refresh token from cookies if not provided in JSON body
+        refresh_token = request.COOKIES.get('cubelogs_refresh_token')
+        if refresh_token and 'refresh' not in request.data:
+            # request.data is immutable if it's a QueryDict.
+            # Convert or set mutable to True.
+            if hasattr(request.data, '_mutable'):
+                request.data._mutable = True
+                request.data['refresh'] = refresh_token
+            elif isinstance(request.data, dict):
+                request.data['refresh'] = refresh_token
+
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200:
+            access = response.data.get('access')
+            refresh = response.data.get('refresh')
+            from django.conf import settings
+            is_secure = not getattr(settings, 'is_dev', False)
+
+            if access:
+                response.set_cookie(
+                    'cubelogs_access_token',
+                    access,
+                    httponly=True,
+                    secure=is_secure,
+                    samesite='Lax',
+                    max_age=24 * 3600
+                )
+            if refresh:
+                response.set_cookie(
+                    'cubelogs_refresh_token',
+                    refresh,
+                    httponly=True,
+                    secure=is_secure,
+                    samesite='Lax',
+                    max_age=30 * 24 * 3600
+                )
+        return response
+
+
+class LogoutView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        response = Response({'message': 'Logged out successfully'}, status=status.HTTP_200_OK)
+        response.delete_cookie('cubelogs_access_token')
+        response.delete_cookie('cubelogs_refresh_token')
+        return response
