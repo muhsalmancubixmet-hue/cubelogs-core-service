@@ -41,7 +41,7 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 ENVIRONMENT = os.getenv('ENVIRONMENT', 'development').lower()
 is_dev = ENVIRONMENT == 'development'
 
-FRONTEND_URL = env('FRONTEND_URL', default='https://cubelogs-dashboard.vercel.app')
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000' if is_dev else 'https://cubelogs-dashboard.vercel.app')
 SUPPORT_EMAIL = env('SUPPORT_EMAIL', default='support@cubelogs.com')
 COMPANY_NAME = env('COMPANY_NAME', default='CubeLogs Inc.')
 COMPANY_WEBSITE = env('COMPANY_WEBSITE', default='https://cubelogs.com')
@@ -58,6 +58,12 @@ DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 CORS_ALLOW_ALL_ORIGINS = env('CORS_ALLOW_ALL_ORIGINS')
 CORS_ALLOWED_ORIGINS = env('CORS_ALLOWED_ORIGINS')
+if is_dev:
+    dev_origins = ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001']
+    for o in dev_origins:
+        if o not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(o)
+
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS', default=[
     'http://localhost:3000',
@@ -110,6 +116,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'django_celery_results',
     'core',
@@ -172,6 +179,13 @@ DATABASES = {
     'default': env.db('DATABASE_URL')
 }
 
+if not is_dev and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "Production environment detected (ENVIRONMENT != 'development'), but DATABASE_URL is configured for SQLite. "
+        "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
+    )
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
@@ -203,24 +217,31 @@ AUTH_PASSWORD_VALIDATORS = [
 # ------------------------------------------------------------------------------
 # Configures Django REST Framework globally (authentication/permissions).
 # ------------------------------------------------------------------------------
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
-        'core.authentication.JWTCookieAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
-    ),
-    'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
-    ),
-    'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle',
-    ],
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/minute',
-        'user': '1000/minute',
-        'auth': '10/minute',
-    },
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=env("ACCESS_TOKEN_LIFETIME",cast=int)),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=env("REFRESH_TOKEN_LIFETIME",cast=int)),
+    'ROTATE_REFRESH_TOKENS': env("ROTATE_REFRESH_TOKENS",cast=bool),
+    'BLACKLIST_AFTER_ROTATION': env("BLACKLIST_AFTER_ROTATION",cast=bool)
 }
+
+REST_FRAMEWORK = {
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",
+    ],
+    'DEFAULT_SCHEMA_CLASS': 'rest_framework.schemas.coreapi.AutoSchema',
+}
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = 'Lax'
 
 
 # ------------------------------------------------------------------------------
@@ -229,10 +250,10 @@ REST_FRAMEWORK = {
 # Configures JSON Web Token lifetime scopes, refresh limits, and algorithms.
 # ------------------------------------------------------------------------------
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=24),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': False,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
@@ -270,7 +291,8 @@ USE_TZ = True
 # Physical folder definitions and URLs for serving system assets and files.
 # ------------------------------------------------------------------------------
 STATIC_URL = 'static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
@@ -355,3 +377,4 @@ if not is_dev:
     CSRF_COOKIE_SECURE = True
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
+

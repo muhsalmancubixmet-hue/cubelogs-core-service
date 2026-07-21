@@ -199,6 +199,38 @@ class BackofficeCouponSerializer(serializers.ModelSerializer):
 
 
 class GlobalBillingSettingsSerializer(serializers.ModelSerializer):
+    attendance_daily_price = serializers.SerializerMethodField()
+    tasks_daily_price = serializers.SerializerMethodField()
+    days_in_current_month = serializers.SerializerMethodField()
+
     class Meta:
         model = GlobalBillingSettings
         fields = '__all__'
+
+    def get_days_in_current_month(self, obj):
+        import calendar
+        from django.utils import timezone
+        now = timezone.now()
+        return calendar.monthrange(now.year, now.month)[1]
+
+    def get_attendance_daily_price(self, obj):
+        import calendar
+        from decimal import Decimal
+        from django.utils import timezone
+        now = timezone.now()
+        total_days = calendar.monthrange(now.year, now.month)[1]
+        if total_days == 0:
+            return "0.00"
+        daily = Decimal(str(obj.attendance_module_price)) / Decimal(str(total_days))
+        return str(daily.quantize(Decimal('0.01')))
+
+    def get_tasks_daily_price(self, obj):
+        import calendar
+        from decimal import Decimal
+        from django.utils import timezone
+        now = timezone.now()
+        total_days = calendar.monthrange(now.year, now.month)[1]
+        if total_days == 0:
+            return "0.00"
+        daily = Decimal(str(obj.tasks_module_price)) / Decimal(str(total_days))
+        return str(daily.quantize(Decimal('0.01')))

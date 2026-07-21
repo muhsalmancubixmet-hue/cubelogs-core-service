@@ -45,6 +45,7 @@ from core.tasks import EmailService
 from django.conf import settings as django_settings
 from django.core.cache import cache          # Used to prevent duplicate emails
 from datetime import timedelta
+import calendar
 
 # Standard Python logger — output appears in Celery worker logs
 logger = logging.getLogger(__name__)
@@ -60,9 +61,7 @@ logger = logging.getLogger(__name__)
 def sweep_workspace_subscriptions():
     # Read TEST_MODE from settings (default: False = production mode)
     TEST_MODE = getattr(django_settings, 'TEST_MODE', False)
-    logger.info(f"Starting subscription validation sweep. TEST_MODE={TEST_MODE}")
-
-    # Fetch all organizations (including those with no employees yet)
+    g_settings = GlobalBillingSettings.get_settings()
     orgs = Organization.objects.all()
 
     for org in orgs:
@@ -91,21 +90,26 @@ def sweep_workspace_subscriptions():
             # How many seconds have passed since the cycle started?
             elapsed = (timezone.now() - settings_obj.subscriptionRenewedAt).total_seconds()
 
-            # ── Calculate monthly subscription cost for this org dynamically based on g_settings ──
+            # ── Calculate monthly subscription cost for this org dynamically based on g_settings & per-day rate ──
             if settings_obj.subscriptionStatus != 'Restricted':
-                rate = 0
+                rate = Decimal('0.00')
+                now_date = timezone.now().date()
+                days_in_month = calendar.monthrange(now_date.year, now_date.month)[1]
                 if settings_obj.is_attendance_enabled:
-                    rate += g_settings.attendance_module_price
+                    daily_att = Decimal(str(g_settings.attendance_module_price)) / Decimal(str(days_in_month))
+                    rate += daily_att * Decimal(str(days_in_month))
                 if settings_obj.is_project_enabled:
-                    rate += g_settings.tasks_module_price
-                cost = g_settings.monthly_subscription_price + ((settings_obj.max_employees_allowed or 0) * g_settings.employee_seat_price) + rate
+                    daily_tasks = Decimal(str(g_settings.tasks_module_price)) / Decimal(str(days_in_month))
+                    rate += daily_tasks * Decimal(str(days_in_month))
+                active_emp_count = Employee.objects.filter(organization=org, is_active=True).count()
+                cost = Decimal(str(g_settings.monthly_subscription_price)) + (Decimal(str(active_emp_count)) * Decimal(str(g_settings.employee_seat_price))) + rate
                 if g_settings.tax_percentage > 0:
-                    cost += cost * (g_settings.tax_percentage / Decimal('100.00'))
+                    cost += cost * (Decimal(str(g_settings.tax_percentage)) / Decimal('100.00'))
             else:
-                cost = g_settings.monthly_data_rent
+                cost = Decimal(str(g_settings.monthly_data_rent))
                 if g_settings.tax_percentage > 0:
-                    cost += cost * (g_settings.tax_percentage / Decimal('100.00'))
-            cost_dec = Decimal(str(cost))
+                    cost += cost * (Decimal(str(g_settings.tax_percentage)) / Decimal('100.00'))
+            cost_dec = Decimal(str(cost)).quantize(Decimal('0.01'))
 
             # TEST PHASE 1: 0 – 120 seconds → Invoice Generated
             if 0 <= elapsed < 120:
@@ -141,7 +145,7 @@ def sweep_workspace_subscriptions():
                     if not cache.get(sent_flag):
                         superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
                         if superadmin:
-                            subject = f"[TEST MODE] Payment Failed & Pending: Unpaid subscription for {org.name}"
+                            subject = f"[TEST MODE] Grace Period Reminder: Unpaid subscription for {org.name}"
                             message = f"""Hi {superadmin.first_name or 'Superadmin'},
 
 This is a notice that your automated wallet deduction failed due to insufficient balance.
@@ -158,7 +162,7 @@ CubeLogs Billing Team"""
                     if not cache.get(sent_flag):
                         superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
                         if superadmin:
-                            subject = f"[TEST MODE] Dues Reminder: Automatic payment collection retry for {org.name}"
+                            subject = f"[TEST MODE] FINAL WARNING: Automatic payment collection retry for {org.name}"
                             message = f"""Hi {superadmin.first_name or 'Superadmin'},
 
 Reminder: We will attempt automatic payment collection for outstanding dues of ₹{cost_dec} from your wallet.
@@ -207,6 +211,18 @@ Updated Wallet Balance: ₹{wallet.balance} {g_settings.currency}
 
 CubeLogs Billing Team"""
                             EmailService.queue_and_send_email(superadmin.email, subject, message, 'muhsalman.cubixmet@gmail.com')
+                    else:
+                        settings_obj.subscriptionStatus = 'Pending Payment'
+                        settings_obj.save()
+                        if wallet:
+                            WalletTransaction.objects.create(
+                                wallet=wallet,
+                                amount=cost_dec,
+                                transactionType='Debit',
+                                success=False,
+                                status='Failed',
+                                details="[TEST MODE] Automated auto-pull subscription renewal failed: Insufficient balance."
+                            )
 
             # TEST PHASE 4: 360 – 480 seconds → Workspace Restricted
             elif 360 <= elapsed < 480:
@@ -268,21 +284,28 @@ CubeLogs Billing Team"""
                 )
 
                 if created:
-                    # Calculate subscription or rent cost dynamically
+                    # Calculate subscription or rent cost dynamically on a per-day basis
                     if settings_obj.subscriptionStatus != 'Restricted':
-                        rate = 0
+                        rate = Decimal('0.00')
+                        days_in_month = calendar.monthrange(billing_month.year, billing_month.month)[1]
+
                         if settings_obj.is_attendance_enabled:
-                            rate += g_settings.attendance_module_price
+                            daily_att = Decimal(str(g_settings.attendance_module_price)) / Decimal(str(days_in_month))
+                            rate += daily_att * Decimal(str(days_in_month))
+
                         if settings_obj.is_project_enabled:
-                            rate += g_settings.tasks_module_price
-                        amount = g_settings.monthly_subscription_price + ((settings_obj.max_employees_allowed or 0) * g_settings.employee_seat_price) + rate
+                            daily_tasks = Decimal(str(g_settings.tasks_module_price)) / Decimal(str(days_in_month))
+                            rate += daily_tasks * Decimal(str(days_in_month))
+
+                        active_emp_count = Employee.objects.filter(organization=org, is_active=True).count()
+                        amount = g_settings.monthly_subscription_price + (Decimal(str(active_emp_count)) * g_settings.employee_seat_price) + rate
                     else:
                         amount = g_settings.monthly_data_rent
 
                     if g_settings.tax_percentage > 0:
                         amount += amount * (g_settings.tax_percentage / Decimal('100.00'))
 
-                    invoice.amount = amount
+                    invoice.amount = amount.quantize(Decimal('0.01'))
                     invoice.save()
 
                 # Send invoice generated notification
@@ -459,76 +482,5 @@ CubeLogs Billing Team"""
                             try:
                                 EmailService.queue_and_send_email(superadmin.email, subject, message)
                             except Exception as e:
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        amount=cost_dec,
-                        transactionType='Debit',
-                        success=True,
-                        status='Success',
-                        details=f"Automated subscription renewal: {settings_obj.max_employees_allowed} employees (Addons: {'attendance' if settings_obj.is_attendance_enabled else 'none'}, {'project' if settings_obj.is_project_enabled else 'none'})"
-                    )
+                                logger.error(f"Failed to send workspace restriction email for {org.name}: {e}")
 
-                    # Send renewal confirmation email to super admin
-                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                    if superadmin:
-                        subject = f"Notice: Subscription Expired & Auto-Renewed for {org.name}"
-                        message = f"""Hi {superadmin.first_name or 'Superadmin'},
-
-Your 10-minute subscription for workspace {org.name} has EXPIRED.
-We have automatically processed the renewal payment of ₹{cost_dec} INR from your prepaid wallet balance.
-
-Updated Wallet Balance: ₹{wallet.balance} INR
-Subscription Validity: Extended by 10 Minutes
-
-Thank you,
-CubeLogs Billing Team"""
-                        try:
-                            EmailService.queue_and_send_email(superadmin.email, subject, message, 'muhsalman.cubixmet@gmail.com')
-                        except Exception as e:
-                            logger.error(f"Failed to queue renewal email: {e}")
-
-                else:
-                    # ❌ Insufficient balance → mark as Pending Payment
-                    settings_obj.subscriptionStatus = 'Pending Payment'
-                    settings_obj.subscriptionExpiresAt = timezone.now()   # Expire immediately
-                    settings_obj.save()
-
-                    # Record the failed attempt in wallet history
-                    if wallet:
-                        WalletTransaction.objects.create(
-                            wallet=wallet,
-                            amount=cost_dec,
-                            transactionType='Debit',
-                            success=False,
-                            status='Failed',
-                            details=f"Automated subscription renewal failed: Insufficient balance. Required: ₹{cost_dec}."
-                        )
-
-                    # Create an audit log entry for admin visibility
-                    AuditLog.objects.create(
-                        employee=wallet.employee if wallet else None,
-                        employeeName="System / Celery",
-                        action="Subscription Renewal Failure",
-                        details=f"Workspace {org.name} subscription renewal failed due to insufficient wallet balance (Required: ₹{cost_dec})."
-                    )
-
-                    # Send failure alert email to super admin
-                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                    if superadmin:
-                        subject = f"URGENT: Subscription Expired & Renewal Failed for {org.name}"
-                        message = f"""Hi {superadmin.first_name or 'Superadmin'},
-
-Your 10-minute subscription for workspace {org.name} has EXPIRED.
-The automated renewal has FAILED due to insufficient wallet balance.
-
-Required Amount: ₹{cost_dec} INR
-Current Wallet Balance: ₹{wallet.balance if wallet else '0.00'} INR
-
-Please deposit money into your wallet immediately to reactivate premium modules.
-
-Thank you,
-CubeLogs Billing Team"""
-                        try:
-                            EmailService.queue_and_send_email(superadmin.email, subject, message, 'muhsalman.cubixmet@gmail.com')
-                        except Exception as e:
-                            logger.error(f"Failed to queue failure email: {e}")

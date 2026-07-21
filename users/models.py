@@ -33,11 +33,12 @@ PERMISSION_FLAGS = [
 ]
 
 class EmployeeManager(BaseUserManager):
-    def create_user(self, email, password=None, **extra_fields):
+    def create_user(self, email, password=None, username=None, **extra_fields):
         if not email:
             raise ValueError('The Email field must be set')
         email = self.normalize_email(email)
-        extra_fields.setdefault('username', email)
+        # username defaults to email when not explicitly provided
+        extra_fields.setdefault('username', username or email)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         # Store as transient attribute so the post_save signal can include it in the welcome email.
@@ -74,7 +75,15 @@ class Employee(AbstractUser):
         related_name='employees',
     )
 
-    objects = EmployeeManager()
+    EMPLOYMENT_STATUS_CHOICES = [
+        ('Active', 'Active'),
+        ('Deactivated', 'Deactivated'),
+        ('Terminated', 'Terminated'),
+        ('Resigned', 'Resigned'),
+    ]
+    employment_status = models.CharField(max_length=20, choices=EMPLOYMENT_STATUS_CHOICES, default='Active')
+
+    objects: EmployeeManager = EmployeeManager()  # type: ignore[assignment]
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []

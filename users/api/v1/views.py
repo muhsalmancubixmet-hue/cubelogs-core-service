@@ -9,6 +9,7 @@ import json
 # DJANGO
 from django.contrib.auth import authenticate, login, logout
 from django.shortcuts import render, redirect
+from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 # THIRD PARTY
@@ -48,55 +49,39 @@ def _enrich_user_data(user_data, organization):
 
 
 
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    def validate(self, attrs):
-        data = dict(super().validate(attrs))
-        if self.user:
-            serializer = EmployeeSerializer(self.user)
-            user_data = serializer.data
-            user_data = _enrich_user_data(user_data, self.user.organization)
-            data['user'] = user_data  # type: ignore
-
-            AuditLog.objects.create(
-                employee=self.user,
-                employeeName=f"{self.user.first_name} {self.user.last_name}".strip() or self.user.email,
-                action="Logged In",
-                details="User logged in via password authentication."
-            )
-        return data
-
-
 # --------------------------------------------------------------------------------
-class CustomTokenObtainPairView(TokenObtainPairView):
+class CustomTokenObtainPairView(APIView):
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [AuthRateThrottle]
-    serializer_class = CustomTokenObtainPairSerializer
 
     def post(self, request, *args, **kwargs):
-        response = super().post(request, *args, **kwargs)
-        if response.status_code == 200:
-            access = response.data.get('access')
-            refresh = response.data.get('refresh')
-            from django.conf import settings
-            is_secure = not getattr(settings, 'is_dev', False)
+        email = request.data.get('email')
+        password = request.data.get('password')
+        if not email or not password:
+            return Response({'error': 'Email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            response.set_cookie(
-                'cubelogs_access_token',
-                access,
-                httponly=True,
-                secure=is_secure,
-                samesite='Lax',
-                max_age=24 * 3600
-            )
-            response.set_cookie(
-                'cubelogs_refresh_token',
-                refresh,
-                httponly=True,
-                secure=is_secure,
-                samesite='Lax',
-                max_age=30 * 24 * 3600
-            )
-        return response
+        user = authenticate(request, username=email, password=password)
+        if not user or not user.is_active:
+            return Response({'error': 'Invalid email or security password.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        login(request, user)
+
+        serializer = EmployeeSerializer(user)
+        user_data = serializer.data
+        user_data = _enrich_user_data(user_data, user.organization)
+
+        AuditLog.objects.create(
+            employee=user,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            action="Logged In",
+            details="User logged in via password authentication."
+        )
+
+        return Response({
+            'user': user_data,
+            'access': 'session',
+            'refresh': 'session',
+        }, status=status.HTTP_200_OK)
 
 
 # --------------------------------------------------------------------------------
@@ -107,7 +92,10 @@ class CurrentUserView(APIView):
 
     def get(self, request):
         serializer = EmployeeSerializer(request.user)
-        return Response(serializer.data)
+        user_data = dict(serializer.data)
+        # Enrich with subscription, feature flags, and permission gates
+        user_data = _enrich_user_data(user_data, request.user.organization)
+        return Response(user_data)
 
 
 # --------------------------------------------------------------------------------
@@ -119,7 +107,6 @@ class MagicLoginView(APIView):
 
     def post(self, request):
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
-        from rest_framework_simplejwt.tokens import RefreshToken
 
         token = request.data.get('token')
         if not token:
@@ -129,7 +116,11 @@ class MagicLoginView(APIView):
         try:
             employee_id = signer.unsign(token, max_age=604800)
             employee = Employee.objects.get(id=employee_id)
-            refresh = RefreshToken.for_user(employee)
+            if not employee.is_active:
+                return Response({'error': 'User account is inactive'}, status=status.HTTP_400_BAD_REQUEST)
+
+            login(request, employee)
+
             serializer = EmployeeSerializer(employee)
             user_data = serializer.data
             user_data = _enrich_user_data(user_data, employee.organization)
@@ -141,32 +132,13 @@ class MagicLoginView(APIView):
                 details="User logged in via magic link authentication."
             )
 
-            response = Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'user': user_data
+            return Response({
+                'user': user_data,
+                'access': 'session',
+                'refresh': 'session',
             }, status=status.HTTP_200_OK)
-
-            from django.conf import settings
-            is_secure = not getattr(settings, 'is_dev', False)
-
-            response.set_cookie(
-                'cubelogs_access_token',
-                str(refresh.access_token),
-                httponly=True,
-                secure=is_secure,
-                samesite='Lax',
-                max_age=24 * 3600
-            )
-            response.set_cookie(
-                'cubelogs_refresh_token',
-                str(refresh),
-                httponly=True,
-                secure=is_secure,
-                samesite='Lax',
-                max_age=30 * 24 * 3600
-            )
-            return response
+        except (BadSignature, SignatureExpired, Employee.DoesNotExist):
+            return Response({'error': 'Invalid or expired magic link token'}, status=status.HTTP_400_BAD_REQUEST)
 
         except SignatureExpired:
             return Response({'error': 'Magic link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -327,8 +299,10 @@ class ChangePasswordView(APIView):
         except ValidationError as e:
             return Response({'error': ' '.join(map(str, e.messages))}, status=status.HTTP_400_BAD_REQUEST)
 
+        from django.contrib.auth import update_session_auth_hash
         request.user.set_password(new_password)
         request.user.save()
+        update_session_auth_hash(request, request.user)
 
         AuditLog.objects.create(
             employee=request.user,
@@ -337,37 +311,11 @@ class ChangePasswordView(APIView):
             details="User successfully changed their password."
         )
 
-        from rest_framework_simplejwt.tokens import RefreshToken
-        refresh = RefreshToken.for_user(request.user)
         serializer = EmployeeSerializer(request.user)
-
-        response = Response({
+        return Response({
             'message': 'Password has been successfully updated.',
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
             'user': serializer.data
         }, status=status.HTTP_200_OK)
-
-        from django.conf import settings
-        is_secure = not getattr(settings, 'is_dev', False)
-
-        response.set_cookie(
-            'cubelogs_access_token',
-            str(refresh.access_token),
-            httponly=True,
-            secure=is_secure,
-            samesite='Lax',
-            max_age=24 * 3600
-        )
-        response.set_cookie(
-            'cubelogs_refresh_token',
-            str(refresh),
-            httponly=True,
-            secure=is_secure,
-            samesite='Lax',
-            max_age=30 * 24 * 3600
-        )
-        return response
 
 
 # --------------------------------------------------------------------------------
@@ -472,6 +420,33 @@ class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
         except Employee.DoesNotExist:
             return Response({'error': 'Employee profile not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+    @action(detail=True, methods=['post'], url_path='change-status')
+    def change_status(self, request, pk=None):
+        employee = self.get_object()
+        new_status = request.data.get('status')
+        VALID_STATUSES = ['Active', 'Deactivated', 'Terminated', 'Resigned']
+        if not new_status or new_status not in VALID_STATUSES:
+            return Response({'error': f'Invalid status. Allowed values: {", ".join(VALID_STATUSES)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        employee.employment_status = new_status
+        if new_status == 'Active':
+            employee.is_active = True
+        else:
+            employee.is_active = False
+        employee.save()
+
+        user = request.user
+        actor_name = f"{user.first_name} {user.last_name}".strip() or user.email if user and user.is_authenticated else "System"
+        AuditLog.objects.create(
+            employee=user if user and user.is_authenticated else None,
+            employeeName=actor_name,
+            action=f"Employee {new_status}",
+            details=f"Changed employment status of {employee.first_name} {employee.last_name} ({employee.email}) to '{new_status}'."
+        )
+
+        serializer = self.get_serializer(employee)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'], url_path='bulk-upload')
     def bulk_upload(self, request):
         import pandas as pd
@@ -499,20 +474,21 @@ class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": f"Failed to parse file: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Clean column headers
-        df.columns = [str(c).strip().lower() for c in df.columns]
+        # Clean column headers (all become plain str after this)
+        df.columns = [c.strip().lower() for c in df.columns.astype(str)]
+        cols: list[str] = list(df.columns)  # typed list for type checker
 
         # Locate columns case-insensitively
-        name_col = next((c for c in df.columns if 'name' in c), None)
-        email_col = next((c for c in df.columns if 'email' in c), None)
-        phone_col = next((c for c in df.columns if 'phone' in c), None)
-        designation_col = next((c for c in df.columns if 'designation' in c or 'role' in c), None)
+        name_col: str | None = next((c for c in cols if 'name' in c), None)
+        email_col: str | None = next((c for c in cols if 'email' in c), None)
+        phone_col: str | None = next((c for c in cols if 'phone' in c), None)
+        designation_col: str | None = next((c for c in cols if 'designation' in c or 'role' in c), None)
 
         # Positional fallback
-        if not name_col and len(df.columns) > 0: name_col = df.columns[0]
-        if not email_col and len(df.columns) > 1: email_col = df.columns[1]
-        if not phone_col and len(df.columns) > 2: phone_col = df.columns[2]
-        if not designation_col and len(df.columns) > 3: designation_col = df.columns[3]
+        if not name_col and len(cols) > 0: name_col = cols[0]
+        if not email_col and len(cols) > 1: email_col = cols[1]
+        if not phone_col and len(cols) > 2: phone_col = cols[2]
+        if not designation_col and len(cols) > 3: designation_col = cols[3]
 
         successful_onboards = []
         failed_rows = []
@@ -522,7 +498,7 @@ class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
         valid_roles = [r.lower().strip() for r in valid_roles]
 
         for idx, row in df.iterrows():
-            row_num = idx + 2  # 1-based sheet row number (index + 2 because header is row 1)
+            row_num = int(str(idx)) + 2  # 1-based sheet row number (index + 2 because header is row 1)
 
             # Extract and sanitize values
             full_name = str(row.get(name_col, '')).strip() if name_col else ''
@@ -674,7 +650,7 @@ def backoffice_login_view(request):
     error = None
     if request.method == 'POST':
         throttle = AuthRateThrottle()
-        if not throttle.allow_request(request, None):
+        if not throttle.allow_request(request, throttle):  # type: ignore[arg-type]
             return render(request, 'backoffice_login.html', {
                 'error': 'Too many login attempts. Please try again in 1 minute.'
             }, status=429)
@@ -709,56 +685,125 @@ def backoffice_logout_view(request):
     return redirect('/backoffice/login/')
 
 
-from rest_framework_simplejwt.views import TokenRefreshView
-
-class CustomTokenRefreshView(TokenRefreshView):
+class CustomTokenRefreshView(APIView):
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request, *args, **kwargs):
-        # Extract refresh token from cookies if not provided in JSON body
-        refresh_token = request.COOKIES.get('cubelogs_refresh_token')
-        if refresh_token and 'refresh' not in request.data:
-            # request.data is immutable if it's a QueryDict.
-            # Convert or set mutable to True.
-            if hasattr(request.data, '_mutable'):
-                request.data._mutable = True
-                request.data['refresh'] = refresh_token
-            elif isinstance(request.data, dict):
-                request.data['refresh'] = refresh_token
-
-        response = super().post(request, *args, **kwargs)
-        if response.status_code == 200:
-            access = response.data.get('access')
-            refresh = response.data.get('refresh')
-            from django.conf import settings
-            is_secure = not getattr(settings, 'is_dev', False)
-
-            if access:
-                response.set_cookie(
-                    'cubelogs_access_token',
-                    access,
-                    httponly=True,
-                    secure=is_secure,
-                    samesite='Lax',
-                    max_age=24 * 3600
-                )
-            if refresh:
-                response.set_cookie(
-                    'cubelogs_refresh_token',
-                    refresh,
-                    httponly=True,
-                    secure=is_secure,
-                    samesite='Lax',
-                    max_age=30 * 24 * 3600
-                )
-        return response
+        return Response({
+            'message': 'Token refresh is deprecated. Session authentication is active.'
+        }, status=status.HTTP_200_OK)
 
 
 class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        logout(request)
+
         response = Response({'message': 'Logged out successfully'}, status=status.HTTP_200_OK)
-        response.delete_cookie('cubelogs_access_token')
-        response.delete_cookie('cubelogs_refresh_token')
+        samesite = 'Lax'
+        response.delete_cookie('sessionid', samesite=samesite)
+        response.delete_cookie('csrftoken', samesite=samesite)
+        response.delete_cookie('cubelogs_access_token', samesite=samesite)
+        response.delete_cookie('cubelogs_refresh_token', samesite=samesite)
         return response
+
+
+def backoffice_manifest_view(request):
+    manifest_data = {
+        "name": "CubeLogs Backoffice",
+        "short_name": "Backoffice",
+        "description": "CubeLogs Backoffice & Operator Administration Console",
+        "categories": ["business", "productivity", "admin"],
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": "#0f172a",
+        "theme_color": "#2563eb",
+        "icons": [
+            {
+                "src": "/static/icon-192x192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any"
+            },
+            {
+                "src": "/static/icon-192x192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "maskable"
+            },
+            {
+                "src": "/static/icon-512x512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any"
+            },
+            {
+                "src": "/static/icon-512x512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable"
+            }
+        ]
+    }
+    return JsonResponse(manifest_data)
+
+
+def backoffice_sw_view(request):
+    sw_code = """
+const CACHE_NAME = 'cubelogs-backoffice-pwa-v1';
+const ASSETS_TO_CACHE = [
+  '/',
+  '/backoffice/login/',
+  '/manifest.json',
+  '/static/icon-192x192.png',
+  '/static/icon-512x512.png'
+];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.addAll(ASSETS_TO_CACHE).catch(() => {});
+    })
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then((keys) => {
+      return Promise.all(
+        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+      );
+    })
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', (event) => {
+  if (event.request.method !== 'GET') return;
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200 && response.type === 'basic') {
+          const responseToCache = response.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseToCache);
+          });
+        }
+        return response;
+      })
+      .catch(() => {
+        return caches.match(event.request).then((cachedResponse) => {
+          return cachedResponse || caches.match('/');
+        });
+      })
+  );
+});
+"""
+    return HttpResponse(sw_code.strip(), content_type='application/javascript')
+
+

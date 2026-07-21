@@ -5,7 +5,7 @@ from subscribers.api.v1.views import (
     DynamicCheckoutView, ConfirmSubscriptionView, BackofficeRegisterCompanyView,
     BackofficeOrganizationListView, stripe_webhook,
     WalletViewSet, BackofficePaymentListView, CouponViewSet, BackofficeCouponViewSet,
-    GlobalBillingSettingsViewSet,
+    GlobalBillingSettingsViewSet, BackofficeEmailLogListView, BackofficeEmailLogResendView,
 )
 
 router = DefaultRouter()
@@ -22,6 +22,9 @@ urlpatterns = [
     path('register-company/', BackofficeRegisterCompanyView.as_view(), name='register_company'),
     path('backoffice/organizations/', BackofficeOrganizationListView.as_view(), name='backoffice_organizations'),
     path('payments/backoffice/', BackofficePaymentListView.as_view(), name='backoffice-payment-list'),
+    path('backoffice/email-logs/', BackofficeEmailLogListView.as_view(), name='backoffice-email-logs'),
+    path('backoffice/email-logs/<int:pk>/resend/', BackofficeEmailLogResendView.as_view(), name='backoffice-email-logs-resend'),
     path('stripe/webhook/', stripe_webhook, name='stripe_webhook'),
     path('', include(router.urls)),
 ]
+

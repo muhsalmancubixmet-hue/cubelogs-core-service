@@ -37,6 +37,8 @@ class HolidaySerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class TemplateSerializer(serializers.ModelSerializer):
+    organization = serializers.PrimaryKeyRelatedField(read_only=True)
+
     class Meta:
         model = Template
         fields = '__all__'

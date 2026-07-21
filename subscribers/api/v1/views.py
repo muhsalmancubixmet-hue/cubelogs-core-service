@@ -134,12 +134,45 @@ class SubscriberAccountViewSet(FilterMixinNew, viewsets.ModelViewSet):
     filterset_class = SubscriberAccountFilter
 
     def get_queryset(self):
-        qs = super().get_queryset()
-        user = self.request.user
-        if user.is_authenticated and user.organization:
-            emails = Employee.objects.filter(organization=user.organization).values_list('email', flat=True)
-            qs = qs.filter(email__in=emails)
-        return qs
+        # Sync subscriber accounts for all tenant superadmins
+        superadmins = Employee.objects.filter(isSuperAdmin=True, organization__isnull=False).select_related('organization', 'organization__settings')
+        valid_emails = set()
+        for sa in superadmins:
+            valid_emails.add(sa.email)
+            sub = SubscriberAccount.objects.filter(email=sa.email).first()
+            settings = getattr(sa.organization, 'settings', None)
+            modules = []
+            if settings:
+                if settings.is_attendance_enabled:
+                    modules.append('Attendance Management')
+                if settings.is_project_enabled:
+                    modules.append('Project & Tasks Management')
+            pkg_name = ', '.join(modules) if modules else 'Core Package'
+            is_active = (settings.subscriptionStatus == 'Active') if settings else True
+            expires_at = settings.subscriptionExpiresAt if settings else None
+
+            if not sub:
+                SubscriberAccount.objects.create(
+                    email=sa.email,
+                    packageName=pkg_name,
+                    isActive=is_active,
+                    expiresAt=expires_at
+                )
+            else:
+                if settings and (sub.isActive != is_active or sub.expiresAt != expires_at or sub.packageName != pkg_name):
+                    sub.packageName = pkg_name
+                    sub.isActive = is_active
+                    sub.expiresAt = expires_at
+                    sub.save(update_fields=['packageName', 'isActive', 'expiresAt', 'updated_at'])
+
+        # Prune stale/orphaned subscriber accounts that are no longer active tenant superadmins
+        if valid_emails:
+            SubscriberAccount.objects.exclude(email__in=valid_emails).delete()
+        else:
+            # If there are superadmin employees in DB (without orgs yet), do not prune all, else prune if orphaned
+            pass
+
+        return SubscriberAccount.objects.all().order_by('-updated_at')
 
 
 # --------------------------------------------------------------------------------
@@ -292,15 +325,20 @@ class ConfirmSubscriptionView(APIView):
         if not session_id:
             return Response({'error': 'Session ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        from dotenv import load_dotenv
-        dotenv_path = os.path.join(str(dj_settings.BASE_DIR), '.env')
-        load_dotenv(dotenv_path, override=True)
-        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(dj_settings, 'STRIPE_SECRET_KEY', None)
-        if not stripe.api_key:
-            stripe.api_key = "sk_test_fake_secret_key"
+        stripe_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(dj_settings, 'STRIPE_SECRET_KEY', None)
+        is_dev_env = getattr(dj_settings, 'is_dev', False) or getattr(dj_settings, 'TEST_MODE', False)
+        allow_mock = is_dev_env and getattr(dj_settings, 'ALLOW_MOCK_PAYMENTS', False)
 
-        is_fake_stripe = stripe.api_key == "sk_test_fake_secret_key"
-        is_mock_session = session_id in ["get", "{CHECKOUT_SESSION_ID}", "test_session_id"] or session_id.startswith("mock_") or is_fake_stripe
+        if not stripe_key:
+            if not allow_mock:
+                return Response({'error': 'Stripe payment gateway is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            stripe_key = "sk_test_fake_secret_key"
+        stripe.api_key = stripe_key
+
+        if not allow_mock and (session_id in ["get", "{CHECKOUT_SESSION_ID}", "test_session_id"] or session_id.startswith("mock_")):
+            return Response({'error': 'Mock payment sessions are disabled in production'}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_mock_session = allow_mock and (session_id in ["get", "{CHECKOUT_SESSION_ID}", "test_session_id"] or session_id.startswith("mock_") or stripe.api_key == "sk_test_fake_secret_key")
 
         if is_mock_session:
             if "topup" in session_id or "wallet" in session_id:
@@ -1067,12 +1105,15 @@ class WalletViewSet(viewsets.ModelViewSet):
 
         import os as _os
         from django.conf import settings as _settings
-        from dotenv import load_dotenv
-        dotenv_path = _os.path.join(str(_settings.BASE_DIR), '.env')
-        load_dotenv(dotenv_path, override=True)
-        stripe_module.api_key = _os.environ.get('STRIPE_SECRET_KEY') or getattr(_settings, 'STRIPE_SECRET_KEY', None)
-        if not stripe_module.api_key:
-            stripe_module.api_key = "sk_test_fake_secret_key"
+        stripe_key = _os.environ.get('STRIPE_SECRET_KEY') or getattr(_settings, 'STRIPE_SECRET_KEY', None)
+        is_dev_env = getattr(_settings, 'is_dev', False) or getattr(_settings, 'TEST_MODE', False)
+        allow_mock = is_dev_env and getattr(_settings, 'ALLOW_MOCK_PAYMENTS', False)
+
+        if not stripe_key:
+            if not allow_mock:
+                return Response({'error': 'Stripe payment gateway is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            stripe_key = "sk_test_fake_secret_key"
+        stripe_module.api_key = stripe_key
 
         frontend_url = _settings.FRONTEND_URL
         meta = {'wallet_id': str(wallet.id), 'amount': str(amount_dec), 'type': 'topup'}
@@ -1080,7 +1121,7 @@ class WalletViewSet(viewsets.ModelViewSet):
             meta['coupon_code'] = validated_code
             meta['bonus_amount'] = str(bonus_amount_dec)
 
-        is_fake_stripe = stripe_module.api_key == "sk_test_fake_secret_key"
+        is_fake_stripe = allow_mock and (stripe_module.api_key == "sk_test_fake_secret_key")
         if is_fake_stripe:
             import uuid
             session_id = f"mock_wallet_topup_{uuid.uuid4().hex}"
@@ -1152,10 +1193,12 @@ class WalletViewSet(viewsets.ModelViewSet):
         now = timezone.now()
         total_days = calendar.monthrange(now.year, now.month)[1]
         remaining_days = total_days - now.day + 1
-        employee_count = settings_obj.max_employees_allowed or 10
-        monthly_rate = Decimal('100.00') * employee_count
-        prorated_amount = (Decimal(str(remaining_days)) / Decimal(str(total_days))) * monthly_rate
-        prorated_amount = prorated_amount.quantize(Decimal('0.01'))
+        
+        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        base_price = g_settings.attendance_module_price if module == 'attendance' else g_settings.tasks_module_price
+        
+        daily_price = Decimal(str(base_price)) / Decimal(str(total_days))
+        prorated_amount = (daily_price * Decimal(str(remaining_days))).quantize(Decimal('0.01'))
 
         wallet, _ = Wallet.objects.get_or_create(employee=user, defaults={'organization': org, 'balance': Decimal('0.00')})
         if not wallet.organization:
@@ -1168,9 +1211,10 @@ class WalletViewSet(viewsets.ModelViewSet):
         wallet.balance -= prorated_amount
         wallet.save()
 
+        daily_display = daily_price.quantize(Decimal('0.01'))
         WalletTransaction.objects.create(
             wallet=wallet, amount=prorated_amount, transactionType='Debit', success=True, status='Success',
-            details=f"Prorated charge for {module.title()} module activation ({remaining_days}/{total_days} days @ ₹100/emp/mo × {employee_count} employees)"
+            details=f"Prorated charge for {module.title()} module activation ({remaining_days}/{total_days} days @ ₹{daily_display}/day [Base: ₹{base_price}/mo])"
         )
 
         setattr(settings_obj, f'is_{module}_enabled', True)
@@ -1288,3 +1332,64 @@ class GlobalBillingSettingsViewSet(viewsets.ViewSet):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# --------------------------------------------------------------------------------
+# BackofficeEmailLogListView: API enabling administration backoffice to view email logs, queues and resend status.
+# --------------------------------------------------------------------------------
+class BackofficeEmailLogListView(APIView):
+    permission_classes = [IsSuperAdminUser]
+
+    def get(self, request):
+        from core.models import EmailLog
+        logs = EmailLog.objects.all().order_by('-created_at')[:200]
+        data = []
+        for log in logs:
+            data.append({
+                'id': log.id,
+                'recipient': log.recipient,
+                'subject': log.subject,
+                'body': log.body,
+                'from_email': log.from_email,
+                'status': log.status,
+                'error_message': log.error_message,
+                'sent_at': log.sent_at.isoformat() if log.sent_at else None,
+                'created_at': log.created_at.isoformat() if log.created_at else None,
+            })
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class BackofficeEmailLogResendView(APIView):
+    permission_classes = [IsSuperAdminUser]
+
+    def post(self, request, pk):
+        from core.models import EmailLog
+        from django.core.mail import send_mail
+        from django.conf import settings
+        from django.utils import timezone
+
+        try:
+            log_item = EmailLog.objects.get(pk=pk)
+        except EmailLog.DoesNotExist:
+            return Response({'error': 'Email log entry not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            send_mail(
+                subject=log_item.subject,
+                message=log_item.body or '',
+                from_email=log_item.from_email or getattr(settings, 'DEFAULT_FROM_EMAIL', None),
+                recipient_list=[log_item.recipient],
+                fail_silently=False,
+                html_message=log_item.body if '<' in (log_item.body or '') else None
+            )
+            log_item.status = 'SENT'
+            log_item.sent_at = timezone.now()
+            log_item.error_message = None
+            log_item.save()
+            return Response({'status': 'sent', 'message': f'Email successfully resent to {log_item.recipient}'}, status=status.HTTP_200_OK)
+        except Exception as exc:
+            log_item.status = 'FAILED'
+            log_item.error_message = str(exc)
+            log_item.save()
+            return Response({'error': f'Failed to resend email: {str(exc)}'}, status=status.HTTP_400_BAD_REQUEST)
+

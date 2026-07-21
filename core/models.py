@@ -292,3 +292,62 @@ class Mode(models.Model):
         return f"Mode (ReadOnly={self.readonly}, Maintenance={self.maintenance}, Down={self.down})"
 
 
+# --------------------------------------------------------------------------------
+# EmailLog Model: Records outgoing email attempts, status, recipient and error logs
+# --------------------------------------------------------------------------------
+class EmailLog(BaseModel):
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('SENT', 'Sent'),
+        ('FAILED', 'Failed'),
+    ]
+    recipient = models.EmailField()
+    subject = models.CharField(max_length=512)
+    body = models.TextField(blank=True, null=True)
+    from_email = models.EmailField(blank=True, null=True)
+    template_type = models.CharField(max_length=50, blank=True, null=True, default='')
+    html_content = models.TextField(blank=True, null=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    error_message = models.TextField(blank=True, null=True)
+    sent_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'api_emaillog'
+        ordering = ['-created_at']
+        verbose_name = 'Email Log'
+        verbose_name_plural = 'Email Queue & Logs'
+
+    def __str__(self):
+        return f"{self.recipient} - {self.subject[:40]} ({self.status})"
+
+
+class EmailQueueManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(status='PENDING', is_deleted=False)
+
+
+class EmailHistoryManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(status__in=['SENT', 'FAILED'], is_deleted=False)
+
+
+class EmailQueue(EmailLog):
+    objects = EmailQueueManager()
+
+    class Meta:
+        proxy = True
+        verbose_name = 'Email Queue (Pending)'
+        verbose_name_plural = 'Email Queue (Pending)'
+
+
+class EmailHistory(EmailLog):
+    objects = EmailHistoryManager()
+
+    class Meta:
+        proxy = True
+        verbose_name = 'Email Delivery History'
+        verbose_name_plural = 'Email Delivery History'
+
+
+
+

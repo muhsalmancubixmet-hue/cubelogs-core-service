@@ -572,6 +572,11 @@ class TemplateViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelVi
         self.required_permission = 'admin:templates'
         return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
+    def perform_create(self, serializer):
+        user = self.request.user
+        org = user.organization if (user.is_authenticated and hasattr(user, 'organization')) else None
+        serializer.save(organization=org)
+
 
 # --------------------------------------------------------------------------------
 # OfficeLocationViewSet: ViewSet managing primary geofence latitude and longitude boundaries.

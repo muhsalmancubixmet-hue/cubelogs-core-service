@@ -21,7 +21,10 @@ from django.conf.urls.static import static
 from django.contrib.auth import logout
 from django.views.generic import RedirectView
 
-from users.api.v1.views import backoffice_view, backoffice_login_view, backoffice_logout_view
+from users.api.v1.views import (
+    backoffice_view, backoffice_login_view, backoffice_logout_view,
+    backoffice_manifest_view, backoffice_sw_view
+)
 from subscribers.api.v1.views import stripe_webhook
 
 def custom_admin_login(request, extra_context=None):
@@ -36,6 +39,8 @@ urlpatterns = [
     path('backoffice/', RedirectView.as_view(url='/', permanent=True)),
     path('backoffice/login/', backoffice_login_view, name='backoffice_login'),
     path('backoffice/logout/', backoffice_logout_view, name='backoffice_logout'),
+    path('manifest.json', backoffice_manifest_view, name='backoffice_manifest'),
+    path('sw.js', backoffice_sw_view, name='backoffice_sw'),
     path('backoffice/stripe-webhook/', stripe_webhook, name='stripe-webhook'),
     path('webhook/', stripe_webhook, name='stripe-webhook-root'),
     path('api/', include('users.api.urls')),
@@ -43,6 +48,6 @@ urlpatterns = [
     path('api/', include('company.api.urls')),
     path('api/', include('subscribers.api.urls')),
     path('api/', include('tasks.api.urls')),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT) + static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 

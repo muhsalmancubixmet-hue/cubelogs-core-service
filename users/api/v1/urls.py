@@ -28,7 +28,7 @@ urlpatterns = [
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/magic-login/', MagicLoginView.as_view(), name='magic_login'),
     path('auth/logout/', LogoutView.as_view(), name='magic_logout'),
-    path('auth/refresh/', CustomTokenRefreshView.as_view(serializer_class=CustomTokenRefreshSerializer), name='token_refresh'),
+    path('auth/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
     path('auth/me/', CurrentUserView.as_view(), name='auth_me'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='password_reset_request'),

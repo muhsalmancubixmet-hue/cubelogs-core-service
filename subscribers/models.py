@@ -163,6 +163,39 @@ class GlobalBillingSettings(BaseModel):
     class Meta:
         db_table = 'api_globalbillingsettings'
 
+    @classmethod
+    def get_settings(cls):
+        settings_obj = cls.objects.first()
+        if not settings_obj:
+            settings_obj = cls.objects.create()
+        return settings_obj
+
     def __str__(self):
         return f"Global Billing Settings (ID={self.id})"
+
+    def get_module_daily_rate(self, module_price, year=None, month=None):
+        import calendar
+        from django.utils import timezone
+        from decimal import Decimal
+        if not year or not month:
+            now = timezone.now()
+            year, month = now.year, now.month
+        total_days = calendar.monthrange(year, month)[1]
+        if total_days == 0:
+            return Decimal('0.00')
+        return Decimal(str(module_price)) / Decimal(str(total_days))
+
+    def calculate_module_monthly_cost(self, module_price, year=None, month=None, days_active=None):
+        import calendar
+        from django.utils import timezone
+        from decimal import Decimal
+        if not year or not month:
+            now = timezone.now()
+            year, month = now.year, now.month
+        total_days = calendar.monthrange(year, month)[1]
+        if total_days == 0:
+            return Decimal('0.00')
+        daily_rate = Decimal(str(module_price)) / Decimal(str(total_days))
+        charge_days = days_active if days_active is not None else total_days
+        return daily_rate * Decimal(str(charge_days))
 

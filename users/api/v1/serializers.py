@@ -39,7 +39,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name', 'name',
-            'phone', 'designation', 'isSuperAdmin', 
+            'phone', 'designation', 'isSuperAdmin', 'is_active', 'employment_status',
             'useDefaultPermissions', 'permissions', 'profilePhoto', 'password',
             'subscription', 'organization'
         ]
@@ -205,6 +205,13 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        status_val = validated_data.get('employment_status')
+        if status_val:
+            if status_val in ['Deactivated', 'Terminated', 'Resigned']:
+                validated_data['is_active'] = False
+            elif status_val == 'Active':
+                validated_data['is_active'] = True
+
         name = self.initial_data.get('name')
         if name:
             parts = name.strip().split(' ', 1)

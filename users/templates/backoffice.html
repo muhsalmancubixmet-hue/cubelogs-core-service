@@ -4,6 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CubeLogs Backoffice | Admin Control Panel</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="CubeLogs Backoffice">
+  <link rel="apple-touch-icon" href="/static/icon-192x192.png">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   
@@ -675,9 +682,220 @@
       margin-top: 2px;
     }
 
+    /* Mobile Top Header & Responsive Drawer Styles */
+    .mobile-header {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 60px;
+      background: #0f172a;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 0 16px;
+      align-items: center;
+      justify-content: space-between;
+      z-index: 90;
+    }
+
+    .mobile-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #ffffff;
+      font-family: var(--font-heading);
+      font-weight: 800;
+      font-size: 1.15rem;
+    }
+
+    .mobile-toggle-btn {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #ffffff;
+      border-radius: var(--radius-sm);
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .mobile-toggle-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(15, 23, 42, 0.65);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 95;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
+
+    .sidebar-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    /* Media Queries for Tablet and Mobile Responsiveness (300px - 1024px) */
+    @media (max-width: 1024px) {
+      .mobile-header {
+        display: flex;
+      }
+
+      .sidebar-overlay {
+        display: block;
+      }
+
+      .sidebar {
+        transform: translateX(-100%);
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+      }
+
+      .main-container {
+        margin-left: 0;
+        padding: 80px 20px 30px 20px;
+        width: 100%;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .main-container {
+        padding: 75px 14px 20px 14px;
+      }
+
+      header.dashboard-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      .header-widgets {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 10px;
+      }
+
+      .widget {
+        padding: 8px 12px;
+        font-size: 0.8rem;
+        justify-content: space-between;
+      }
+
+      .panel {
+        padding: 20px 14px;
+        margin-bottom: 20px;
+      }
+
+      .panel-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+
+      h1.page-title {
+        font-size: 1.5rem;
+      }
+
+      .panel-title {
+        font-size: 1.15rem;
+      }
+
+      .form-grid {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .main-container {
+        padding: 70px 10px 16px 10px;
+      }
+
+      h1.page-title {
+        font-size: 1.3rem;
+      }
+
+      .panel {
+        padding: 16px 10px;
+        border-radius: var(--radius-md);
+      }
+
+      .header-widgets {
+        grid-template-columns: 1fr;
+      }
+
+      th, td {
+        padding: 10px 8px;
+        font-size: 0.8rem;
+        white-space: nowrap;
+      }
+
+      .btn {
+        padding: 8px 12px;
+        font-size: 0.82rem;
+      }
+    }
+
+    @media (max-width: 360px) {
+      .main-container {
+        padding: 68px 6px 12px 6px;
+      }
+
+      .sidebar {
+        width: 260px;
+      }
+
+      h1.page-title {
+        font-size: 1.15rem;
+      }
+
+      .widget {
+        font-size: 0.75rem;
+      }
+
+      .modal-wrapper {
+        padding: 14px 10px !important;
+      }
+    }
+
   </style>
 </head>
-<body>  <!-- Sidebar -->
+<body>
+  <!-- Mobile Top Header Bar -->
+  <div class="mobile-header">
+    <div class="mobile-brand">
+      <span style="color: #60a5fa; display: flex; align-items: center;">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+      </span>
+      <span>CubeLogs Backoffice</span>
+    </div>
+    <button type="button" class="mobile-toggle-btn" onclick="toggleMobileSidebar()" aria-label="Toggle Navigation Menu">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+    </button>
+  </div>
+
+  <!-- Mobile Sidebar Overlay -->
+  <div class="sidebar-overlay" onclick="closeMobileSidebar()"></div>
+
+  <!-- Sidebar -->
   <aside class="sidebar">
     <div class="brand-header">
       <span class="brand-logo">
@@ -741,12 +959,7 @@
         </span>
         <span>Testimonials</span>
       </div>
-      <div class="nav-link" id="nav-billing_settings" onclick="switchTab('billing_settings')">
-        <span class="nav-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-        </span>
-        <span>Billing Settings</span>
-      </div>
+
 
       <div class="nav-category">System Admin</div>
       <div class="nav-link" id="nav-staff" onclick="switchTab('staff')">
@@ -761,6 +974,12 @@
         </span>
         <span>Audit Logs</span>
       </div>
+      <div class="nav-link" id="nav-email_logs" onclick="switchTab('email_logs')">
+        <span class="nav-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+        </span>
+        <span>Email Center</span>
+      </div>
     </nav>
     <div class="admin-profile">
       <div class="admin-avatar">SA</div>
@@ -770,6 +989,11 @@
       </div>
     </div>
     
+    <div id="pwa-install-btn" style="display: none; margin: 12px 16px; padding: 10px 14px; background: rgba(37, 99, 235, 0.12); border: 1px solid var(--border-focus); border-radius: var(--radius-md); color: var(--primary); cursor: pointer; align-items: center; justify-content: center; gap: 8px; font-weight: 600; font-size: 0.85rem;" onclick="installBackofficePWA()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+      <span>Install App</span>
+    </div>
+
     <a href="/backoffice/logout/" class="logout-btn">Log Out Session</a>
   </aside>
 
@@ -803,6 +1027,7 @@
             <div class="form-group">
               <label>Monthly Price (₹) *</label>
               <input type="number" step="0.01" id="pkg-price" required placeholder="0.00">
+              <small style="color: var(--text-light); margin-top: 4px; display: block; font-size: 0.76rem;">Daily rate is calculated dynamically: Monthly Price ÷ Days in Month (28, 29, 30, or 31 days). Billed on the 1st of every month.</small>
             </div>
             <div class="form-group">
               <label>YouTube Video URL (Optional)</label>
@@ -810,6 +1035,21 @@
             </div>
           </div>
           <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Publish Module Pricing</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Monthly Data Retention Rent Configuration</h2>
+        </div>
+        <form id="data-rent-form" onsubmit="saveDataRetentionRent(event)">
+          <div class="form-grid" style="grid-template-columns: minmax(220px, 400px);">
+            <div class="form-group">
+              <label>Monthly Data Retention Rent (₹) *</label>
+              <input type="number" step="0.01" id="m-rent-price" required placeholder="50.00">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Data Retention Rent</button>
         </form>
       </div>
 
@@ -1159,63 +1399,7 @@
     </section>
 
 
-    <!-- TAB: Billing Settings -->
-    <section id="tab-billing_settings" class="tab-content">
-      <div class="panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Global Billing Settings Configuration</h2>
-        </div>
-        <form id="global-billing-form" onsubmit="saveGlobalBillingSettings(event)" style="padding: 20px;">
-          <div class="form-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Monthly Base Subscription Price *</label>
-              <input type="number" step="0.01" id="g-sub-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Monthly Data Retention Rent *</label>
-              <input type="number" step="0.01" id="g-rent-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Attendance Module Price *</label>
-              <input type="number" step="0.01" id="g-attendance-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Tasks Module Price *</label>
-              <input type="number" step="0.01" id="g-tasks-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Employee Seat Price *</label>
-              <input type="number" step="0.01" id="g-employee-price" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Grace Period Duration (Days) *</label>
-              <input type="number" id="g-grace-days" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Reminder Email Days Before *</label>
-              <input type="number" id="g-reminder-days" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Automatic Deduction Date (Day of Month) *</label>
-              <input type="number" min="1" max="28" id="g-deduct-day" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Invoice Generation Date (Day of Month) *</label>
-              <input type="number" min="1" max="28" id="g-invoice-day" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Currency *</label>
-              <input type="text" id="g-currency" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-            <div class="form-group">
-              <label style="font-weight: 600; display: block; margin-bottom: 8px; color: var(--text-main);">Tax Percentage (%) *</label>
-              <input type="number" step="0.01" id="g-tax" required style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-main);">
-            </div>
-          </div>
-          <button type="submit" class="btn btn-primary" style="margin-top: 24px; padding: 12px 24px;">Save Billing Settings</button>
-        </form>
-      </div>
-    </section>
+
 
 
     <!-- TAB 5: Coupon Engine -->
@@ -1313,64 +1497,7 @@
           </table>
         </div>
       </div>
-
-    <!-- Lead Details Modal Overlay -->
-    <div id="lead-details-modal" class="modal-backdrop" style="display: none;">
-      <div class="modal-wrapper">
-        <button class="modal-close" onclick="closeLeadModal()">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-        </button>
-        <h2 class="panel-title" id="modal-lead-name" style="border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 10px;">Lead Details</h2>
-        
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 10px;">
-          <div>
-            <label style="font-weight:600;">Email</label>
-            <p id="modal-lead-email" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
-          </div>
-          <div>
-            <label style="font-weight:600;">Phone</label>
-            <p id="modal-lead-phone" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
-          </div>
-          <div>
-            <label style="font-weight:600;">Company</label>
-            <p id="modal-lead-company" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
-          </div>
-          <div>
-            <label style="font-weight:600;">Registered Date</label>
-            <p id="modal-lead-date" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
-          </div>
-        </div>
-
-        <div style="margin-bottom: 15px;">
-          <label style="font-weight:600;">Message / Customization Request</label>
-          <div id="modal-lead-message" style="background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:12px; font-size:0.9rem; color:var(--text-main); max-height: 100px; overflow-y: auto;"></div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; background: #f0f7ff; border: 1px solid rgba(59,130,246,0.15); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
-          <div class="form-group">
-            <label style="font-weight:700; color:var(--primary-dark);">Status Transition</label>
-            <select id="modal-lead-status" onchange="patchLeadField()" style="padding: 8px; font-size: 0.88rem;">
-              <option value="New">New</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Closed">Closed</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label style="font-weight:700; color:var(--primary-dark);">Assigned Operator</label>
-            <select id="modal-lead-assignee" onchange="patchLeadField()" style="padding: 8px; font-size: 0.88rem;">
-              <option value="">Unassigned</option>
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <label style="font-weight:700; color:var(--primary-dark); display:block; border-bottom:1px solid var(--border); padding-bottom:8px; margin-bottom:10px;">Activity Timeline & Audit Trail</label>
-          <div id="modal-lead-timeline" class="timeline-container" style="max-height: 200px; overflow-y: auto;">
-            <!-- Timeline items loaded dynamically -->
-          </div>
-        </div>
-      </div>
-    </div>
+    </section>
 
     <!-- TAB 7: Staff Manager -->
     <section id="tab-staff" class="tab-content">
@@ -1475,6 +1602,135 @@
         </div>
       </div>
     </section>
+
+    <!-- TAB 9: Email Center & Queue -->
+    <section id="tab-email_logs" class="tab-content">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px;">
+        <div class="panel" style="padding: 20px; margin-bottom: 0; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 0.8rem; color: var(--text-light); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Total Outbound Emails</span>
+          <span id="email-stat-total" style="font-size: 1.8rem; font-weight: 800; color: var(--primary-dark); font-family: var(--font-heading);">0</span>
+          <span style="font-size: 0.75rem; color: var(--text-light); font-weight: 500;">All logged email attempts</span>
+        </div>
+        <div class="panel" style="padding: 20px; margin-bottom: 0; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 0.8rem; color: var(--text-light); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Pending Queue</span>
+          <span id="email-stat-pending" style="font-size: 1.8rem; font-weight: 800; color: #f59e0b; font-family: var(--font-heading);">0</span>
+          <span style="font-size: 0.75rem; color: var(--text-light); font-weight: 500;">Waiting for dispatch</span>
+        </div>
+        <div class="panel" style="padding: 20px; margin-bottom: 0; display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-size: 0.8rem; color: var(--text-light); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Delivery Success Rate</span>
+          <span id="email-stat-rate" style="font-size: 1.8rem; font-weight: 800; color: #10b981; font-family: var(--font-heading);">100%</span>
+          <span style="font-size: 0.75rem; color: var(--success); font-weight: 600;" id="email-stat-success-count">0 sent successfully</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <h2 class="panel-title">Email Queue & Outbound Dispatch Logs</h2>
+          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <select id="filter-email-status" onchange="renderEmailLogs()" style="padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);">
+              <option value="">All Statuses</option>
+              <option value="PENDING">Pending Queue</option>
+              <option value="SENT">Sent History</option>
+              <option value="FAILED">Failed Logs</option>
+            </select>
+            <input type="text" placeholder="Search email logs..." style="width: 200px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);" oninput="emailSearchQuery = this.value; renderEmailLogs()">
+            <button class="btn btn-primary btn-sm" onclick="fetchEmailLogs()">Refresh</button>
+          </div>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Recipient</th>
+                <th>Subject</th>
+                <th>Status</th>
+                <th>Created At</th>
+                <th>Sent At</th>
+                <th style="text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="email-table-body">
+              <tr>
+                <td colspan="6" style="text-align: center;">Loading email queue & logs...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Lead Details Modal Overlay -->
+    <div id="lead-details-modal" class="modal-backdrop" style="display: none;">
+      <div class="modal-wrapper">
+        <button class="modal-close" onclick="closeLeadModal()">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+        <h2 class="panel-title" id="modal-lead-name" style="border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 10px;">Lead Details</h2>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 10px;">
+          <div>
+            <label style="font-weight:600;">Email</label>
+            <p id="modal-lead-email" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
+          </div>
+          <div>
+            <label style="font-weight:600;">Phone</label>
+            <p id="modal-lead-phone" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
+          </div>
+          <div>
+            <label style="font-weight:600;">Company</label>
+            <p id="modal-lead-company" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
+          </div>
+          <div>
+            <label style="font-weight:600;">Registered Date</label>
+            <p id="modal-lead-date" style="font-size:0.9rem; color:var(--text-main); font-weight:500;"></p>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+          <label style="font-weight:600;">Message / Customization Request</label>
+          <div id="modal-lead-message" style="background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:12px; font-size:0.9rem; color:var(--text-main); max-height: 100px; overflow-y: auto;"></div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; background: #f0f7ff; border: 1px solid rgba(59,130,246,0.15); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+          <div class="form-group">
+            <label style="font-weight:700; color:var(--primary-dark);">Status Transition</label>
+            <select id="modal-lead-status" onchange="patchLeadField()" style="padding: 8px; font-size: 0.88rem;">
+              <option value="New">New</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Closed">Closed</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label style="font-weight:700; color:var(--primary-dark);">Assigned Operator</label>
+            <select id="modal-lead-assignee" onchange="patchLeadField()" style="padding: 8px; font-size: 0.88rem;">
+              <option value="">Unassigned</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-weight:700; color:var(--primary-dark); display:block; border-bottom:1px solid var(--border); padding-bottom:8px; margin-bottom:10px;">Activity Timeline & Audit Trail</label>
+          <div id="modal-lead-timeline" class="timeline-container" style="max-height: 200px; overflow-y: auto;">
+            <!-- Timeline items loaded dynamically -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Staff Permissions Modal Overlay -->
+    <div id="staff-permissions-modal" class="modal-backdrop" style="display: none;">
+      <div class="modal-wrapper" style="max-width: 550px;">
+        <button class="modal-close" onclick="closeStaffPermissionsModal()">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+        <h2 class="panel-title" id="modal-staff-name" style="border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 12px;">Active Granted Permissions</h2>
+        <p id="modal-staff-email" style="font-size:0.85rem; color:var(--text-light); margin-bottom:16px;"></p>
+        
+        <div id="modal-staff-permissions-list" style="display: flex; flex-wrap: wrap; gap: 8px; max-height: 350px; overflow-y: auto; padding: 16px; background: #f8fafc; border: 1px solid var(--border); border-radius: var(--radius-md);">
+          <!-- Populated dynamically in JS -->
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Javascript backoffice router and fetching -->
@@ -1545,8 +1801,29 @@
       }, 5000);
     }
 
+    // Mobile Sidebar Drawer Controller
+    function toggleMobileSidebar() {
+      const sidebar = document.querySelector('.sidebar');
+      const overlay = document.querySelector('.sidebar-overlay');
+      if (sidebar && overlay) {
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('active');
+      }
+    }
+
+    function closeMobileSidebar() {
+      const sidebar = document.querySelector('.sidebar');
+      const overlay = document.querySelector('.sidebar-overlay');
+      if (sidebar && overlay) {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+      }
+    }
+
     // Tabs switching
     function switchTab(tabId) {
+      closeMobileSidebar();
+
       // Toggle nav link classes
       document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
       const activeLink = Array.from(document.querySelectorAll('.nav-link')).find(link => {
@@ -1572,10 +1849,15 @@
         coupons: 'Coupon Management Engine',
         staff: 'Staff Management Portal',
         audit_logs: 'System Audit Logs Trail',
-        billing_settings: 'Global Billing Settings'
+        email_logs: 'Email Center & Outbound Queue'
       };
       document.getElementById('current-tab-title').textContent = titleMap[tabId] || 'Portal Management';
-      
+
+      // Update browser URL hash so the section is bookmarkable and visible in the address bar
+      if (window.location.hash !== `#${tabId}`) {
+        history.replaceState(null, '', `#${tabId}`);
+      }
+
       // Load data for the active tab
       loadData(tabId);
     }
@@ -1591,6 +1873,7 @@
       if (tabId === 'testimonials') fetchTestimonials();
       if (tabId === 'coupons') fetchCoupons();
       if (tabId === 'staff') { fetchOrganizations(); fetchStaff(); populatePermissionsCheckboxes(); }
+      if (tabId === 'email_logs') fetchEmailLogs();
       if (tabId === 'audit_logs') { fetchOrganizations(); fetchAuditLogs(); }
       if (tabId === 'billing_settings') fetchGlobalBillingSettings();
     }
@@ -1656,9 +1939,16 @@
           ? `<a href="${escapeHtml(pkg.video_url)}" target="_blank" title="Watch Demo Video" style="color: var(--primary); text-decoration: none; margin-left: 6px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline; vertical-align:middle;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></a>`
           : '';
 
+        const nowDt = new Date();
+        const daysInCurMonth = new Date(nowDt.getFullYear(), nowDt.getMonth() + 1, 0).getDate();
+        const calcDailyRate = (parseFloat(pkg.price) / daysInCurMonth).toFixed(2);
+
         row.innerHTML = `
           <td style="font-weight: 600; color: var(--text-main);">${escapeHtml(pkg.name)}${videoLink}</td>
-          <td style="color: var(--primary); font-weight: 600;">₹${parseFloat(pkg.price).toFixed(2)}</td>
+          <td style="color: var(--primary); font-weight: 600;">
+            ₹${parseFloat(pkg.price).toFixed(2)}
+            <div style="font-size:0.74rem; color:var(--text-light); font-weight:400;">₹${calcDailyRate}/day (${daysInCurMonth} days this mo)</div>
+          </td>
           <td>${moduleBadges || '<span style="color:var(--text-light); font-size:0.8rem;">—</span>'}</td>
           <td>${userBadge}</td>
           <td>${statusBadge}</td>
@@ -1756,6 +2046,7 @@
           });
         }
 
+        fetchGlobalDataRent();
         renderPackages();
       } catch (err) {
         body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444;">Failed to read modules: ${err.message}</td></tr>`;
@@ -1879,10 +2170,23 @@
       filtered.forEach(sub => {
         const expDate = sub.expiresAt ? new Date(sub.expiresAt).toLocaleDateString() : 'Lifetime';
         const updateDate = new Date(sub.updatedAt).toLocaleString();
+
+        // Build module badges from packageName
+        const moduleColors = {
+          'Attendance Management': { bg: '#eff6ff', color: '#2563eb', icon: '🕐' },
+          'Project & Tasks Management': { bg: '#f0fdf4', color: '#16a34a', icon: '📋' },
+          'Core Package': { bg: '#f8fafc', color: '#64748b', icon: '⚙️' },
+        };
+        const modules = sub.packageName ? sub.packageName.split(', ') : ['Core Package'];
+        const moduleBadges = modules.map(mod => {
+          const style = moduleColors[mod] || { bg: '#faf5ff', color: '#7c3aed', icon: '📦' };
+          return `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;font-size:0.72rem;font-weight:700;background:${style.bg};color:${style.color};border:1px solid ${style.color}22;white-space:nowrap;margin:1px;">${style.icon} ${escapeHtml(mod)}</span>`;
+        }).join('');
+
         const row = document.createElement('tr');
         row.innerHTML = `
           <td style="font-weight: 600;">${escapeHtml(sub.email)}</td>
-          <td><span class="badge badge-primary">${escapeHtml(sub.packageName)}</span></td>
+          <td style="max-width: 260px;">${moduleBadges}</td>
           <td><span class="badge ${sub.isActive ? 'badge-success' : 'badge-danger'}">${sub.isActive ? 'Active' : 'Expired'}</span></td>
           <td>${escapeHtml(expDate)}</td>
           <td style="font-size: 0.78rem; color: var(--text-light);">${escapeHtml(updateDate)}</td>
@@ -2323,7 +2627,8 @@
       { id: 'cms', label: 'CMS Landing Content' },
       { id: 'coupons', label: 'Coupon Engine Rules' },
       { id: 'staff', label: 'Staff & Permissions' },
-      { id: 'audit_logs', label: 'Audit Logs Trail' }
+      { id: 'audit_logs', label: 'Audit Logs Trail' },
+      { id: 'email_logs', label: 'Email Center Logs' }
     ];
 
     let cachedOrgs = [];
@@ -2405,9 +2710,11 @@
       body.innerHTML = '';
       filtered.forEach(emp => {
         const perms = Array.isArray(emp.permissions) ? emp.permissions : [];
-        let permBadges = perms.map(p => `<span class="badge badge-primary" style="margin: 2px;">${p}</span>`).join('');
+        let permDisplay = `<button class="btn btn-primary btn-sm" onclick="openStaffPermissionsModal(${emp.id})" style="padding: 4px 12px; font-size: 0.78rem; font-weight: 600; border-radius: 999px;">
+          View Permissions (${perms.length})
+        </button>`;
         if (perms.length === 0) {
-          permBadges = '<span style="color:var(--text-light); font-size:0.8rem;">None</span>';
+          permDisplay = '<span style="color:var(--text-light); font-size:0.8rem;">None</span>';
         }
         
         const isRoot = emp.is_superuser || (emp.isSuperAdmin && !emp.organization);
@@ -2419,13 +2726,44 @@
           <td>${escapeHtml(emp.email)}</td>
           <td><span class="badge" style="background:#f1f5f9; color:var(--text-muted);">Global Operator</span></td>
           <td>${escapeHtml(emp.designation || 'N/A')}</td>
-          <td style="max-width: 250px; overflow: hidden; display: flex; flex-wrap: wrap;">${permBadges}</td>
+          <td>${permDisplay}</td>
           <td style="text-align: right;">
             ${deleteButton}
           </td>
         `;
         body.appendChild(row);
       });
+    }
+
+    function openStaffPermissionsModal(empId) {
+      const emp = staffItems.find(s => s.id === empId);
+      if (!emp) return;
+
+      const name = `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || emp.email;
+      document.getElementById('modal-staff-name').textContent = `Permissions: ${name}`;
+      document.getElementById('modal-staff-email').textContent = `Email: ${emp.email} | Scope: Global Operator`;
+
+      const listContainer = document.getElementById('modal-staff-permissions-list');
+      const perms = Array.isArray(emp.permissions) ? emp.permissions : [];
+      
+      listContainer.innerHTML = '';
+      if (perms.length === 0) {
+        listContainer.innerHTML = '<span style="color:var(--text-light); font-size:0.88rem;">No active permissions granted.</span>';
+      } else {
+        perms.forEach(p => {
+          const badge = document.createElement('span');
+          badge.className = 'badge badge-primary';
+          badge.style.cssText = 'padding: 6px 12px; font-size: 0.82rem; border-radius: 6px; margin: 2px;';
+          badge.textContent = p;
+          listContainer.appendChild(badge);
+        });
+      }
+
+      document.getElementById('staff-permissions-modal').style.display = 'flex';
+    }
+
+    function closeStaffPermissionsModal() {
+      document.getElementById('staff-permissions-modal').style.display = 'none';
     }
 
     async function createStaff(e) {
@@ -3097,49 +3435,126 @@
       }
     }
 
-    // 11. Global Billing Settings Logic
-    async function fetchGlobalBillingSettings() {
+    // 12. Email Center & Queue Logic
+    let emailItems = [];
+    let emailSearchQuery = '';
+
+    async function fetchEmailLogs() {
+      const body = document.getElementById('email-table-body');
+      if (!body) return;
       try {
-        const data = await apiFetch('/api/backoffice/billing-settings/');
-        // Pre-fill form fields
-        document.getElementById('g-sub-price').value = data.monthly_subscription_price || '100.00';
-        document.getElementById('g-rent-price').value = data.monthly_data_rent || '50.00';
-        document.getElementById('g-attendance-price').value = data.attendance_module_price || '100.00';
-        document.getElementById('g-tasks-price').value = data.tasks_module_price || '100.00';
-        document.getElementById('g-employee-price').value = data.employee_seat_price || '100.00';
-        document.getElementById('g-grace-days').value = data.grace_period_days || '5';
-        document.getElementById('g-reminder-days').value = data.reminder_email_days_before || '1';
-        document.getElementById('g-deduct-day').value = data.auto_deduction_day || '5';
-        document.getElementById('g-invoice-day').value = data.invoice_generation_day || '1';
-        document.getElementById('g-currency').value = data.currency || 'INR';
-        document.getElementById('g-tax').value = data.tax_percentage || '0.00';
+        const data = await apiFetch('/api/backoffice/email-logs/');
+        emailItems = data;
+        renderEmailLogs();
       } catch (err) {
-        showNotification('Failed to fetch billing settings: ' + err.message, 'error');
+        body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444;">Failed to read email logs: ${err.message}</td></tr>`;
       }
     }
 
-    async function saveGlobalBillingSettings(e) {
-      e.preventDefault();
-      const payload = {
-        monthly_subscription_price: parseFloat(document.getElementById('g-sub-price').value),
-        monthly_data_rent: parseFloat(document.getElementById('g-rent-price').value),
-        attendance_module_price: parseFloat(document.getElementById('g-attendance-price').value),
-        tasks_module_price: parseFloat(document.getElementById('g-tasks-price').value),
-        employee_seat_price: parseFloat(document.getElementById('g-employee-price').value),
-        grace_period_days: parseInt(document.getElementById('g-grace-days').value),
-        reminder_email_days_before: parseInt(document.getElementById('g-reminder-days').value),
-        auto_deduction_day: parseInt(document.getElementById('g-deduct-day').value),
-        invoice_generation_day: parseInt(document.getElementById('g-invoice-day').value),
-        currency: document.getElementById('g-currency').value,
-        tax_percentage: parseFloat(document.getElementById('g-tax').value)
-      };
+    function renderEmailLogs() {
+      const body = document.getElementById('email-table-body');
+      if (!body) return;
 
+      const filterStatus = (document.getElementById('filter-email-status') || {}).value || '';
+      let filtered = emailItems;
+
+      if (filterStatus) {
+        filtered = filtered.filter(item => item.status === filterStatus);
+      }
+
+      if (emailSearchQuery) {
+        const q = emailSearchQuery.toLowerCase();
+        filtered = filtered.filter(item => {
+          return (item.recipient || '').toLowerCase().includes(q)
+            || (item.subject || '').toLowerCase().includes(q)
+            || (item.body || '').toLowerCase().includes(q)
+            || (item.error_message || '').toLowerCase().includes(q);
+        });
+      }
+
+      // Calculate stats
+      const total = emailItems.length;
+      const pending = emailItems.filter(i => i.status === 'PENDING').length;
+      const sent = emailItems.filter(i => i.status === 'SENT').length;
+      const failed = emailItems.filter(i => i.status === 'FAILED').length;
+      const rate = total > 0 ? ((sent / total) * 100).toFixed(1) : '100.0';
+
+      const totalEl = document.getElementById('email-stat-total');
+      if (totalEl) totalEl.textContent = total;
+      const pendingEl = document.getElementById('email-stat-pending');
+      if (pendingEl) pendingEl.textContent = pending;
+      const rateEl = document.getElementById('email-stat-rate');
+      if (rateEl) rateEl.textContent = `${rate}%`;
+      const successCountEl = document.getElementById('email-stat-success-count');
+      if (successCountEl) successCountEl.textContent = `${sent} sent, ${failed} failed`;
+
+      if (filtered.length === 0) {
+        body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-light);">No email logs matching search/filter criteria.</td></tr>`;
+        return;
+      }
+
+      body.innerHTML = '';
+      filtered.forEach(log => {
+        const createdAt = log.created_at ? new Date(log.created_at).toLocaleString() : '—';
+        const sentAt = log.sent_at ? new Date(log.sent_at).toLocaleString() : '—';
+
+        let statusBadge = `<span class="badge badge-success">Sent</span>`;
+        if (log.status === 'PENDING') {
+          statusBadge = `<span class="badge badge-warning">Pending</span>`;
+        } else if (log.status === 'FAILED') {
+          statusBadge = `<span class="badge badge-danger" title="${escapeHtml(log.error_message || '')}">Failed</span>`;
+        }
+
+        const resendBtn = `<button class="btn btn-primary btn-sm" onclick="resendEmail(${log.id})">${log.status === 'PENDING' ? 'Send Now' : 'Resend Email'}</button>`;
+
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td style="font-weight: 600; color: var(--text-main);">${escapeHtml(log.recipient)}</td>
+          <td style="max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(log.subject)}">${escapeHtml(log.subject)}</td>
+          <td>${statusBadge}</td>
+          <td style="font-size: 0.78rem; color: var(--text-light);">${escapeHtml(createdAt)}</td>
+          <td style="font-size: 0.78rem; color: var(--text-light);">${escapeHtml(sentAt)}</td>
+          <td style="text-align: right;">
+            ${resendBtn}
+          </td>
+        `;
+        body.appendChild(row);
+      });
+    }
+
+    async function resendEmail(id) {
       try {
-        await apiFetch('/api/backoffice/billing-settings/', 'POST', payload);
-        showNotification('Billing settings saved successfully!');
-        fetchGlobalBillingSettings();
+        const res = await apiFetch(`/api/backoffice/email-logs/${id}/resend/`, 'POST');
+        showNotification(res.message || 'Email resent successfully!');
+        fetchEmailLogs();
       } catch (err) {
-        showNotification('Failed to save settings: ' + err.message, 'error');
+        showNotification(err.message, 'error');
+        fetchEmailLogs();
+      }
+    }
+    async function fetchGlobalDataRent() {
+      try {
+        const data = await apiFetch('/api/backoffice/billing-settings/');
+        const rentInput = document.getElementById('m-rent-price');
+        if (rentInput) rentInput.value = data.monthly_data_rent || '50.00';
+      } catch (err) {
+        console.error('Failed to fetch data retention rent:', err);
+      }
+    }
+
+    async function saveDataRetentionRent(e) {
+      e.preventDefault();
+      const rentVal = parseFloat(document.getElementById('m-rent-price').value);
+      if (isNaN(rentVal) || rentVal < 0) {
+        showNotification('Enter a valid rent price.', 'error');
+        return;
+      }
+      try {
+        await apiFetch('/api/backoffice/billing-settings/', 'POST', { monthly_data_rent: rentVal });
+        showNotification('Monthly Data Retention Rent saved successfully!');
+        fetchGlobalDataRent();
+      } catch (err) {
+        showNotification('Failed to save rent: ' + err.message, 'error');
       }
     }
 
@@ -3154,7 +3569,7 @@
       
       // Parse backoffice tab permissions from view context
       let userPermissions = JSON.parse('{{ user_permissions_json|escapejs }}');
-      const allTabs = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings'];
+      const allTabs = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'email_logs'];
       const hasAnyBackofficePerm = allTabs.some(t => userPermissions.includes(t));
       if (!hasAnyBackofficePerm) {
         userPermissions = allTabs;
@@ -3171,10 +3586,13 @@
         }
       });
       
-      // Navigate to the first authorized tab
-      const firstAuthTab = allTabs.find(tab => userPermissions.includes(tab));
-      if (firstAuthTab) {
-        switchTab(firstAuthTab);
+      // Navigate to the tab from URL hash if present, else first authorized tab
+      const hashTab = window.location.hash.replace('#', '');
+      const startTab = (hashTab && allTabs.includes(hashTab) && userPermissions.includes(hashTab))
+        ? hashTab
+        : allTabs.find(tab => userPermissions.includes(tab));
+      if (startTab) {
+        switchTab(startTab);
       } else {
         document.querySelector('.main-container').innerHTML = `
           <div style="padding: 60px; text-align: center; color: var(--text-muted);">
@@ -3186,6 +3604,38 @@
       
       updateHeaderMetrics();
     });
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/sw.js').then(function(reg) {
+          console.log('Backoffice PWA ServiceWorker registered:', reg.scope);
+        }).catch(function(err) {
+          console.warn('Backoffice ServiceWorker registration error:', err);
+        });
+      });
+    }
+
+    let deferredPrompt;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      const btn = document.getElementById('pwa-install-btn');
+      if (btn) btn.style.display = 'flex';
+    });
+
+    function installBackofficePWA() {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then((choice) => {
+          if (choice.outcome === 'accepted') {
+            console.log('User installed Backoffice PWA');
+          }
+          deferredPrompt = null;
+          const btn = document.getElementById('pwa-install-btn');
+          if (btn) btn.style.display = 'none';
+        });
+      }
+    }
   </script>
 </body>
 </html>

@@ -4,6 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CubeLogs Backoffice | Operator Login</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="CubeLogs Backoffice">
+  <link rel="apple-touch-icon" href="/static/icon-192x192.png">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   
   <style>
@@ -91,6 +98,25 @@
       to {
         opacity: 1;
         transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 480px) {
+      body {
+        padding: 12px;
+      }
+      .login-container {
+        padding: 24px 16px;
+        border-radius: var(--radius-md);
+      }
+    }
+
+    @media (max-width: 340px) {
+      body {
+        padding: 6px;
+      }
+      .login-container {
+        padding: 18px 10px;
       }
     }
 
@@ -329,5 +355,16 @@
       <span>Return to main <a href="/">Corporate Landing Page</a></span>
     </div>
   </div>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+        navigator.serviceWorker.register('/sw.js').then(function(reg) {
+          console.log('Backoffice Login PWA ServiceWorker registered:', reg.scope);
+        }).catch(function(err) {
+          console.warn('Backoffice Login ServiceWorker registration failed:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>
