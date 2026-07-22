@@ -1487,6 +1487,190 @@ class CompanyRegistrationTests(APITestCase):
         self.assertIn('Welcome@123', html_body)
 
 
+# --------------------------------------------------------------------------------
+# Unit Tests for Custom Decorators & Permissions
+# --------------------------------------------------------------------------------
+from django.test import RequestFactory
+from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.views import APIView
+from rest_framework.viewsets import ViewSet
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.http import HttpResponse
+from core.decorators import permission_required, plan_permission_required, check_mode, timer
+from core.permissions import ActionPermissionMixin, DRFPlanPermissionRequired, DRFCheckModePermission
+from core.models import Mode
+from subscribers.models import SubscriberAccount, SubscriptionPackage
+
+@permission_required('dummy:perm')
+def dummy_fbv(request):
+    return HttpResponse("FBV Success")
+
+class DummyAPIView(APIView):
+    @permission_required('dummy:perm')
+    def get(self, request):
+        return Response({"message": "APIView Success"})
+
+class DummyViewSet(ActionPermissionMixin, ViewSet):
+    required_plan_feature = 'is_attendance_enabled'
+    
+    permission_classes_by_action = {
+        'list': [DRFCheckModePermission, DRFPlanPermissionRequired],
+        'create': [DRFCheckModePermission, DRFPlanPermissionRequired],
+        'custom_action': [DRFCheckModePermission, DRFPlanPermissionRequired]
+    }
+
+    def list(self, request):
+        return Response({"message": "ViewSet List Success"})
+
+    def create(self, request):
+        return Response({"message": "ViewSet Create Success"})
+
+    @action(detail=False, methods=['post'])
+    def custom_action(self, request):
+        return Response({"message": "Custom Action Success"})
+
+
+class CustomDecoratorsAndPermissionsTests(APITestCase):
+    def setUp(self):
+        from core.models import Organization
+        self.factory = APIRequestFactory()
+        self.org = Organization.objects.create(name='Test Org')
+        self.employee = Employee.objects.create_user(
+            email='testdecorator@example.com',
+            password='password123',
+            first_name='Test',
+            last_name='Decorator',
+            organization=self.org
+        )
+
+    def test_permission_required_anonymous_user(self):
+        # Anonymous user on FBV
+        req = self.factory.get('/dummy-fbv/')
+        # django request doesn't have user initially unless middleware runs
+        from django.contrib.auth.models import AnonymousUser
+        req.user = AnonymousUser()
+        res = dummy_fbv(req)
+        self.assertEqual(res.status_code, 401)
+
+    def test_permission_required_authenticated_without_permission(self):
+        # Authenticated user without permission on FBV
+        req = self.factory.get('/dummy-fbv/')
+        req.user = self.employee
+        res = dummy_fbv(req)
+        self.assertEqual(res.status_code, 403)
+
+    def test_permission_required_authenticated_with_permission(self):
+        # Authenticated user with permission on FBV
+        self.employee.permissions = ['dummy:perm']
+        self.employee.save()
+        req = self.factory.get('/dummy-fbv/')
+        req.user = self.employee
+        res = dummy_fbv(req)
+        self.assertEqual(res.status_code, 200)
+
+    def test_superuser_bypass(self):
+        # Superuser bypass on FBV without explicit permission
+        self.employee.is_superuser = True
+        self.employee.save()
+        req = self.factory.get('/dummy-fbv/')
+        req.user = self.employee
+        res = dummy_fbv(req)
+        self.assertEqual(res.status_code, 200)
+
+    def test_apiview_permission_required(self):
+        # APIView get method check
+        view = DummyAPIView.as_view()
+        req = self.factory.get('/dummy-apiview/')
+        
+        # Without permission
+        force_authenticate(req, user=self.employee)
+        res = view(req)
+        self.assertEqual(res.status_code, 403)
+
+        # With permission
+        self.employee.permissions = ['dummy:perm']
+        self.employee.save()
+        req2 = self.factory.get('/dummy-apiview/')
+        force_authenticate(req2, user=self.employee)
+        res2 = view(req2)
+        self.assertEqual(res2.status_code, 200)
+
+    def test_plan_permission_required_disabled_and_enabled(self):
+        # Setup mode first
+        Mode.objects.update_or_create(id=1, defaults={'down': False, 'maintenance': False, 'readonly': False})
+        
+        # Test ViewSet with disabled plan feature
+        # Create a mock subscriber account with no active package/features
+        SubscriberAccount.objects.update_or_create(
+            email=self.employee.email,
+            defaults={'packageName': 'Free Package', 'isActive': True}
+        )
+        SubscriptionPackage.objects.update_or_create(
+            name='Free Package',
+            defaults={'features': [], 'price': '0.00'}
+        )
+        
+        view = DummyViewSet.as_view({'get': 'list'})
+        req = self.factory.get('/dummy-viewset/')
+        force_authenticate(req, user=self.employee)
+        res = view(req)
+        self.assertEqual(res.status_code, 403) # Restricted
+
+        # Enable plan feature
+        SubscriptionPackage.objects.update_or_create(
+            name='Free Package',
+            defaults={'features': ['is_attendance_enabled'], 'price': '0.00'}
+        )
+        req2 = self.factory.get('/dummy-viewset/')
+        force_authenticate(req2, user=self.employee)
+        res2 = view(req2)
+        self.assertEqual(res2.status_code, 200) # Allowed
+
+    def test_check_mode_enforcement(self):
+        # Setup plan feature to be active
+        SubscriptionPackage.objects.update_or_create(
+            name='Free Package',
+            defaults={'features': ['is_attendance_enabled'], 'price': '0.00'}
+        )
+        SubscriberAccount.objects.update_or_create(
+            email=self.employee.email,
+            defaults={'packageName': 'Free Package', 'isActive': True}
+        )
+
+        # Down mode check
+        Mode.objects.update_or_create(id=1, defaults={'down': True, 'maintenance': False, 'readonly': False})
+        view = DummyViewSet.as_view({'get': 'list'})
+        req = self.factory.get('/dummy-viewset/')
+        force_authenticate(req, user=self.employee)
+        res = view(req)
+        self.assertEqual(res.status_code, 503)
+
+        # Maintenance mode check
+        Mode.objects.update_or_create(id=1, defaults={'down': False, 'maintenance': True, 'readonly': False})
+        req_m = self.factory.get('/dummy-viewset/')
+        force_authenticate(req_m, user=self.employee)
+        res_m = view(req_m)
+        self.assertEqual(res_m.status_code, 503)
+
+        # Readonly mode checks
+        Mode.objects.update_or_create(id=1, defaults={'down': False, 'maintenance': False, 'readonly': True})
+        
+        # Read operations (GET) should pass
+        req_get = self.factory.get('/dummy-viewset/')
+        force_authenticate(req_get, user=self.employee)
+        res_get = view(req_get)
+        self.assertEqual(res_get.status_code, 200)
+
+        # Write operations (POST) should fail with 403
+        view_create = DummyViewSet.as_view({'post': 'create'})
+        req_post = self.factory.post('/dummy-viewset/', {})
+        force_authenticate(req_post, user=self.employee)
+        res_post = view_create(req_post)
+        self.assertEqual(res_post.status_code, 403)
+
+
+
 
 
 

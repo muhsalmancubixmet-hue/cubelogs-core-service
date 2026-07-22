@@ -35,74 +35,8 @@ from company.filters import (
 
 
 
-class IsSuperAdminUser(permissions.BasePermission):
-    def has_permission(self, request, view):
-        if not (request.user and request.user.is_authenticated and getattr(request.user, 'isSuperAdmin', False)):
-            return False
-
-        # Client superadmin — belongs to an organisation
-        if request.user.organization is not None:
-            return True
-
-
-        # Backoffice operators — enforce page-level permissions
-        user_perms = getattr(request.user, 'permissions', [])
-        if not isinstance(user_perms, list):
-            user_perms = []
-
-        all_backoffice_perms = [
-            'packages', 'subscribers', 'leads', 'cms', 'faqs',
-            'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings',
-        ]
-        if not any(p in user_perms for p in all_backoffice_perms):
-            user_perms = all_backoffice_perms
-
-        path = request.path
-        if 'packages' in path:
-            return 'packages' in user_perms
-        elif 'subscribers' in path:
-            return 'subscribers' in user_perms
-        elif 'leads' in path:
-            return 'leads' in user_perms
-        elif 'cms' in path:
-            # Allow reading CMS/FAQs if they have either cms or faqs permission
-            if request.method == 'GET':
-                return 'cms' in user_perms or 'faqs' in user_perms
-            
-            # For CMS writes, determine if they are updating the FAQ copy block
-            try:
-                if isinstance(request.data, dict) and request.data.get('key') == 'faqs':
-                    return 'faqs' in user_perms
-            except Exception:
-                pass
-            return 'cms' in user_perms
-        elif 'faqs' in path:
-            return 'faqs' in user_perms
-        elif 'testimonials' in path:
-            return 'testimonials' in user_perms
-        elif 'lms' in path:
-            return 'lms' in user_perms
-        elif 'coupons' in path:
-            return 'coupons' in user_perms
-        elif 'employees' in path:
-            return 'staff' in user_perms
-        elif 'audit-logs' in path:
-            return 'audit_logs' in user_perms
-        elif 'billing-settings' in path:
-            return 'billing_settings' in user_perms
-
-        return True
-
-
-
-class CanViewPackagesOrSuperAdmin(permissions.BasePermission):
-    def has_permission(self, request, view):
-        if not (request.user and request.user.is_authenticated):
-            return False
-        if getattr(request.user, 'isSuperAdmin', False):
-            return True
-        user_perms = getattr(request.user, 'permissions', [])
-        return 'settings:billing' in user_perms
+from core.permissions import IsSuperAdminUser
+from company.permissions import CanViewPackagesOrSuperAdmin
 
 
 # ==============================================================================

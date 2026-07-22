@@ -18,9 +18,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
-from core.permissions import HasRequiredPermission
+from core.permissions import HasRequiredPermission, IsSuperAdminUser
 from core.mixins import FilterMixinNew
-from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon, GlobalBillingSettings
+from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon, GlobalBillingSettings, default_coupon_code
 from subscribers.filters import SubscriptionPackageFilter, SubscriberAccountFilter, CouponFilter, BackofficeCouponFilter
 from subscribers.api.v1.serializers import (
     SubscriptionPackageSerializer, SubscriberAccountSerializer,
@@ -32,69 +32,6 @@ from users.models import Employee, PERMISSION_FLAGS
 from core.models import Organization, OrgSettings
 from company.models import Lead
 from users.api.v1.serializers import EmployeeSerializer
-from subscribers.models import default_coupon_code
-
-
-class IsSuperAdminUser(permissions.BasePermission):
-    def has_permission(self, request, view):
-        if not (request.user and request.user.is_authenticated and getattr(request.user, 'isSuperAdmin', False)):
-            return False
-
-        # Client superadmin — belongs to an organisation
-        if request.user.organization is not None:
-            return True
-
-        # Root admin
-        if request.user.is_superuser:
-            return True
-
-        # Backoffice operators — enforce page-level permissions
-        user_perms = getattr(request.user, 'permissions', [])
-        if not isinstance(user_perms, list):
-            user_perms = []
-
-        all_backoffice_perms = [
-            'packages', 'subscribers', 'leads', 'cms', 'faqs',
-            'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings',
-        ]
-        if not any(p in user_perms for p in all_backoffice_perms):
-            user_perms = all_backoffice_perms
-
-        path = request.path
-        if 'packages' in path:
-            return 'packages' in user_perms
-        elif 'subscribers' in path:
-            return 'subscribers' in user_perms
-        elif 'leads' in path:
-            return 'leads' in user_perms
-        elif 'cms' in path:
-            # Allow reading CMS/FAQs if they have either cms or faqs permission
-            if request.method == 'GET':
-                return 'cms' in user_perms or 'faqs' in user_perms
-            
-            # For CMS writes, determine if they are updating the FAQ copy block
-            try:
-                if isinstance(request.data, dict) and request.data.get('key') == 'faqs':
-                    return 'faqs' in user_perms
-            except Exception:
-                pass
-            return 'cms' in user_perms
-        elif 'faqs' in path:
-            return 'faqs' in user_perms
-        elif 'testimonials' in path:
-            return 'testimonials' in user_perms
-        elif 'lms' in path:
-            return 'lms' in user_perms
-        elif 'coupons' in path:
-            return 'coupons' in user_perms
-        elif 'employees' in path:
-            return 'staff' in user_perms
-        elif 'audit-logs' in path:
-            return 'audit_logs' in user_perms
-        elif 'billing-settings' in path:
-            return 'billing_settings' in user_perms
-
-        return True
 
 
 # --------------------------------------------------------------------------------
@@ -205,12 +142,13 @@ class DynamicCheckoutView(APIView):
             user.save()
         org = user.organization
 
+        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
         rate = 0
         if 'attendance' in addons:
-            rate += 100
+            rate += g_settings.attendance_module_price
         if 'project' in addons:
-            rate += 100
-        total_cost = employee_count * rate
+            rate += g_settings.tasks_module_price
+        total_cost = employee_count * int(rate)
 
         settings = org.settings
         if not settings:

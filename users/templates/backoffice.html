@@ -1941,12 +1941,12 @@
 
         const nowDt = new Date();
         const daysInCurMonth = new Date(nowDt.getFullYear(), nowDt.getMonth() + 1, 0).getDate();
-        const calcDailyRate = (parseFloat(pkg.price) / daysInCurMonth).toFixed(2);
+        const calcDailyRate = (parseFloat(pkg.effectivePrice != null ? pkg.effectivePrice : pkg.price) / daysInCurMonth).toFixed(2);
 
         row.innerHTML = `
           <td style="font-weight: 600; color: var(--text-main);">${escapeHtml(pkg.name)}${videoLink}</td>
           <td style="color: var(--primary); font-weight: 600;">
-            ₹${parseFloat(pkg.price).toFixed(2)}
+            ₹${parseFloat(pkg.effectivePrice != null ? pkg.effectivePrice : pkg.price).toFixed(2)} / employee / mo
             <div style="font-size:0.74rem; color:var(--text-light); font-weight:400;">₹${calcDailyRate}/day (${daysInCurMonth} days this mo)</div>
           </td>
           <td>${moduleBadges || '<span style="color:var(--text-light); font-size:0.8rem;">—</span>'}</td>
@@ -2010,6 +2010,15 @@
         const data = await apiFetch('/api/packages/');
         const subscribersData = await apiFetch('/api/subscribers/');
         window.allSubscribersList = subscribersData || [];
+
+        // Fetch live GlobalBillingSettings so the displayed price reflects the actual billing engine prices
+        let globalBillingSettings = null;
+        try {
+          globalBillingSettings = await apiFetch('/api/backoffice/billing-settings/');
+        } catch (e) {
+          console.warn('Could not fetch global billing settings:', e);
+        }
+        window.globalBillingSettings = globalBillingSettings;
         
         packageItems = data.filter(pkg => {
           const features = Array.isArray(pkg.features) ? pkg.features : [];
@@ -2019,6 +2028,24 @@
             return hasFeature || nameMatch;
           });
         });
+
+        // Overlay the effective billing price onto each module package
+        if (globalBillingSettings) {
+          packageItems = packageItems.map(pkg => {
+            const features = Array.isArray(pkg.features) ? pkg.features : [];
+            const isAttendance = features.includes('attendance');
+            const isProject = features.includes('project') || features.includes('tasks');
+            let effectivePrice = pkg.price;
+            if (isAttendance && globalBillingSettings.attendance_module_price != null) {
+              effectivePrice = globalBillingSettings.attendance_module_price;
+            } else if (isProject && globalBillingSettings.tasks_module_price != null) {
+              effectivePrice = globalBillingSettings.tasks_module_price;
+            }
+            return { ...pkg, effectivePrice };
+          });
+        } else {
+          packageItems = packageItems.map(pkg => ({ ...pkg, effectivePrice: pkg.price }));
+        }
         
         const regModules = document.getElementById('reg-modules-container');
         if (regModules) {
@@ -2041,7 +2068,8 @@
             chk.style.margin = '0';
             
             label.appendChild(chk);
-            label.appendChild(document.createTextNode(`${pkg.name} (₹${pkg.price}/mo)`));
+            const displayPrice = pkg.effectivePrice != null ? pkg.effectivePrice : pkg.price;
+            label.appendChild(document.createTextNode(`${pkg.name} (₹${parseFloat(displayPrice).toFixed(2)}/employee/mo)`));
             regModules.appendChild(label);
           });
         }

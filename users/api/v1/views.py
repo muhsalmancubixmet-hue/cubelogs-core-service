@@ -24,9 +24,11 @@ from django_filters.rest_framework import DjangoFilterBackend
 from users.models import Employee
 from core.models import AuditLog
 from core.mixins import FilterMixinNew
+from core.permissions import ActionPermissionMixin, DRFCheckModePermission, HasRequiredPermission
 from users.filters import EmployeeFilter
 from users.api.v1.serializers import EmployeeSerializer, CustomTokenRefreshSerializer
 from core.module_registry.loader import load_modules
+from core.decorators import check_mode
 from core.throttling import AuthRateThrottle
 
 
@@ -321,12 +323,23 @@ class ChangePasswordView(APIView):
 # --------------------------------------------------------------------------------
 # EmployeeViewSet: ViewSet managing employee CRUD operations, onboard validations, and template sync.
 # --------------------------------------------------------------------------------
-class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
+class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewSet):
     queryset = Employee.objects.all().order_by('id')
     serializer_class = EmployeeSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = EmployeeFilter
 
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'revoke': [permissions.AllowAny],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'change_status': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'bulk_upload': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+    }
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -343,19 +356,15 @@ class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if request.user.is_authenticated and request.user.isSuperAdmin and request.user.organization is None:
-            if request.user.is_superuser:
-                return
-            user_perms = getattr(request.user, 'permissions', [])
-            if not isinstance(user_perms, list) or 'staff' not in user_perms:
-                self.permission_denied(request, message="You do not have permission to manage backoffice staff.")
+        from users.permissions import check_backoffice_staff_management
+        check_backoffice_staff_management(self, request)
 
     def get_permissions(self):
-        if self.action in ['list', 'retrieve']:
-            return [permissions.IsAuthenticated()]
-        if self.action == 'revoke':
-            return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+        if self.action in ['list', 'retrieve', 'revoke']:
+            self.required_permission = None
+        else:
+            self.required_permission = 'admin:employees'
+        return super().get_permissions()
 
     def perform_create(self, serializer):
         employee = serializer.save()
@@ -614,7 +623,7 @@ class EmployeeViewSet(FilterMixinNew, viewsets.ModelViewSet):
 # PermissionsConfigView: View to retrieve system authorization flag configuration registry.
 # --------------------------------------------------------------------------------
 class PermissionsConfigView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission]
 
     def get(self, request):
         try:
@@ -624,6 +633,7 @@ class PermissionsConfigView(APIView):
             return Response({'error': f"Failed to load permissions config: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@check_mode
 def backoffice_view(request):
     if not request.user.is_authenticated or not getattr(request.user, 'isSuperAdmin', False):
         return redirect('/backoffice/login/?next=/')

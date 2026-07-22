@@ -81,6 +81,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
         employeeLimit = pkg.employeeLimit if pkg else 5
         
         days_remaining = 12
+        subscription_expires_at = None
+        access_locked_date = None
+
         if expiresAt:
             delta = expiresAt - timezone.now()
             days_remaining = max(0, delta.days)
@@ -95,14 +98,40 @@ class EmployeeSerializer(serializers.ModelSerializer):
         org = obj.organization
         warning_active = False
         seconds_remaining = 0
+        is_expired = False
+
+        # Fetch GlobalBillingSettings for access lock date computation
+        try:
+            from subscribers.models import GlobalBillingSettings
+            g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+            lock_day = g_settings.auto_deduction_day + g_settings.grace_period_days
+        except Exception:
+            lock_day = 10  # fallback: 5 + 5
+
         if org and org.settings:
             is_attendance_enabled = org.settings.is_attendance_enabled
             is_project_enabled = org.settings.is_project_enabled
             max_employees_allowed = org.settings.max_employees_allowed
             if org.settings.subscriptionExpiresAt:
+                subscription_expires_at = org.settings.subscriptionExpiresAt
                 delta = org.settings.subscriptionExpiresAt - timezone.now()
                 seconds_remaining = max(0, int(delta.total_seconds()))
-                days_remaining = max(0, int(delta.total_seconds() / 60))
+                days_remaining = max(0, delta.days)
+                if delta.total_seconds() <= 0:
+                    is_expired = True
+                    # Compute access locked date: lock_day of the current or next month
+                    import calendar as cal_mod
+                    now_local = timezone.now()
+                    lock_month = now_local.month if now_local.day < lock_day else now_local.month + 1
+                    lock_year = now_local.year if lock_month <= 12 else now_local.year + 1
+                    lock_month = lock_month if lock_month <= 12 else 1
+                    max_day = cal_mod.monthrange(lock_year, lock_month)[1]
+                    lock_day_clamped = min(lock_day, max_day)
+                    from datetime import datetime, timezone as dt_timezone
+                    lock_dt = datetime(lock_year, lock_month, lock_day_clamped, tzinfo=dt_timezone.utc)
+                    access_locked_date = lock_dt.date().isoformat()
+                    lock_delta = lock_dt - timezone.now()
+                    days_remaining = max(0, lock_delta.days)
                 if 0 < seconds_remaining <= 300:
                     warning_active = True
             else:
@@ -114,9 +143,12 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 is_project_enabled = settings_obj.is_project_enabled
                 max_employees_allowed = settings_obj.max_employees_allowed
                 if settings_obj.subscriptionExpiresAt:
+                    subscription_expires_at = settings_obj.subscriptionExpiresAt
                     delta = settings_obj.subscriptionExpiresAt - timezone.now()
                     seconds_remaining = max(0, int(delta.total_seconds()))
-                    days_remaining = max(0, int(delta.total_seconds() / 60))
+                    days_remaining = max(0, delta.days)
+                    if delta.total_seconds() <= 0:
+                        is_expired = True
                     if 0 < seconds_remaining <= 300:
                         warning_active = True
                 else:
@@ -126,6 +158,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'packageName': packageName,
             'isActive': isActive,
             'expiresAt': expiresAt.isoformat() if expiresAt else None,
+            'subscriptionExpiresAt': subscription_expires_at.isoformat() if subscription_expires_at else None,
+            'isExpired': is_expired,
+            'accessLockedDate': access_locked_date,
             'features': features,
             'employeeLimit': employeeLimit,
             'daysRemaining': days_remaining,

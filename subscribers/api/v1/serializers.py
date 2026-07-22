@@ -169,13 +169,66 @@ class WalletSerializer(serializers.ModelSerializer):
     transactions = WalletTransactionSerializer(many=True, read_only=True)
     employee_email = serializers.EmailField(source='employee.email', read_only=True)
     employee_name = serializers.SerializerMethodField()
+    attendance_module_price = serializers.SerializerMethodField()
+    tasks_module_price = serializers.SerializerMethodField()
 
     class Meta:
         model = Wallet
-        fields = ['id', 'employee', 'employee_email', 'employee_name', 'balance', 'stripe_customer_id', 'transactions', 'createdAt', 'updatedAt']
+        fields = [
+            'id', 'employee', 'employee_email', 'employee_name', 'balance',
+            'stripe_customer_id', 'transactions', 'createdAt', 'updatedAt',
+            'attendance_module_price', 'tasks_module_price'
+        ]
 
     def get_employee_name(self, obj):
         return f"{obj.employee.first_name} {obj.employee.last_name}".strip() or obj.employee.email
+
+    def get_attendance_module_price(self, obj):
+        # Use the SubscriptionPackage price — same value shown in the backoffice Registered Modules table.
+        # Prefer a package explicitly named 'Attendance Management'; exclude free packages (price=0).
+        pkg = (
+            SubscriptionPackage.objects
+            .filter(features__icontains='attendance', isActive=True)
+            .exclude(price=0)
+            .order_by('-price')  # highest-priced standalone module first (avoids cheap bundles)
+            .first()
+        )
+        # Further narrow: prefer the one whose name includes 'Attendance'
+        named_pkg = (
+            SubscriptionPackage.objects
+            .filter(name__icontains='attendance', isActive=True)
+            .exclude(price=0)
+            .first()
+        )
+        if named_pkg:
+            return str(named_pkg.price)
+        if pkg:
+            return str(pkg.price)
+        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        return str(g_settings.attendance_module_price)
+
+    def get_tasks_module_price(self, obj):
+        # Use the SubscriptionPackage price — same value shown in the backoffice Registered Modules table.
+        # Prefer a package explicitly named 'Project & Tasks Management'; exclude free packages.
+        named_pkg = (
+            SubscriptionPackage.objects
+            .filter(name__icontains='project', isActive=True)
+            .exclude(price=0)
+            .first()
+        )
+        if named_pkg:
+            return str(named_pkg.price)
+        pkg = (
+            SubscriptionPackage.objects
+            .filter(features__icontains='project', isActive=True)
+            .exclude(price=0)
+            .order_by('price')
+            .first()
+        )
+        if pkg:
+            return str(pkg.price)
+        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        return str(g_settings.tasks_module_price)
 
     def to_representation(self, instance):
         from decimal import InvalidOperation, Decimal

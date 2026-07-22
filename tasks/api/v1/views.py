@@ -13,6 +13,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 # APPLICATION SPECIFIC
 from core.models import AuditLog
 from core.mixins import FilterMixinNew
+from core.permissions import ActionPermissionMixin, DRFCheckModePermission, DRFPlanPermissionRequired
 from tasks.models import Task
 from tasks.filters import TaskFilter
 from tasks.api.v1.serializers import TaskSerializer
@@ -21,11 +22,21 @@ from tasks.api.v1.serializers import TaskSerializer
 # --------------------------------------------------------------------------------
 # TaskViewSet: ViewSet managing assignment, details, and status updates of user tasks.
 # --------------------------------------------------------------------------------
-class TaskViewSet(FilterMixinNew, viewsets.ModelViewSet):
+class TaskViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewSet):
     queryset = Task.objects.all().order_by('-id')
     serializer_class = TaskSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = TaskFilter
+
+    required_plan_feature = 'is_project_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, permissions.BasePermission], # placeholder will be replaced by IsTaskOwnerOrManager
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, permissions.BasePermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, permissions.BasePermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, permissions.BasePermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, permissions.BasePermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, permissions.BasePermission],
+    }
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -39,8 +50,13 @@ class TaskViewSet(FilterMixinNew, viewsets.ModelViewSet):
         return qs
 
     def get_permissions(self):
-        from core.permissions import IsTaskOwnerOrManager
-        return [permissions.IsAuthenticated(), IsTaskOwnerOrManager()]
+        from tasks.permissions import IsTaskOwnerOrManager
+        # Replace the placeholder BasePermission with the actual IsTaskOwnerOrManager class
+        self.permission_classes_by_action = {
+            k: [IsTaskOwnerOrManager if p == permissions.BasePermission else p for p in v]
+            for k, v in self.permission_classes_by_action.items()
+        }
+        return super().get_permissions()
 
 
     def perform_create(self, serializer):

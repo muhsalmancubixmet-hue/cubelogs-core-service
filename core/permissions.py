@@ -26,92 +26,124 @@ class HasRequiredPermission(permissions.BasePermission):
         return required_permission in user_perms
 
 
-class IsTaskOwnerOrManager(permissions.BasePermission):
+class IsSuperAdminUser(permissions.BasePermission):
     """
-    Custom permission class for Task management.
-    - Managers/Admins with tasks:create can perform all actions.
-    - Regular employees can view/retrieve their own assigned tasks,
-      and only edit the status of their assigned tasks.
+    Common permission class for SuperAdmin and Backoffice operators.
+    Applies shared permission verification rules for Subscribers and Company.
     """
     def has_permission(self, request, view):
-        user = request.user
-        if not (user and user.is_authenticated):
+        if not (request.user and request.user.is_authenticated and getattr(request.user, 'isSuperAdmin', False)):
             return False
 
-        if user.is_superuser or getattr(user, 'isSuperAdmin', False):
+        # Client superadmin — belongs to an organisation
+        if request.user.organization is not None:
             return True
 
-        # For list/retrieve, the queryset filtering itself restricts access.
-        if view.action in ['list', 'retrieve']:
+        # Root admin
+        if request.user.is_superuser:
             return True
 
-        # Creating or deleting tasks requires task workspace creator permission
-        if view.action in ['create', 'destroy']:
-            user_perms = getattr(user, 'permissions', [])
-            return 'tasks:create' in user_perms
+        # Backoffice operators — enforce page-level permissions
+        user_perms = getattr(request.user, 'permissions', [])
+        if not isinstance(user_perms, list):
+            user_perms = []
 
-        # For updates, we do instance-level checks (handled in has_object_permission)
-        return True
+        all_backoffice_perms = [
+            'packages', 'subscribers', 'leads', 'cms', 'faqs',
+            'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings',
+        ]
+        if not any(p in user_perms for p in all_backoffice_perms):
+            user_perms = all_backoffice_perms
 
-    def has_object_permission(self, request, view, obj):
-        user = request.user
-        if user.is_superuser or getattr(user, 'isSuperAdmin', False):
-            return True
-
-        user_perms = getattr(user, 'permissions', [])
-        if 'tasks:create' in user_perms:
-            return True
-
-        # Non-managers can only edit status of their own assigned tasks
-        if obj.assignedTo == user and view.action in ['update', 'partial_update']:
-            # Inspect the request data. They should only change 'status'.
-            updated_fields = set(request.data.keys())
-            # Allow updates if 'status' is the only field or no fields are updated
-            if updated_fields.issubset({'status'}):
-                return True
-
-        return False
-
-
-class IsLeaveOwnerOrManager(permissions.BasePermission):
-    """
-    Custom permission class for Leave management.
-    - Owners can create leaves and cancel (destroy) their own leaves if still pending.
-    - Approvers/Admins can list, retrieve, and update (approve/reject).
-    """
-    def has_permission(self, request, view):
-        user = request.user
-        if not (user and user.is_authenticated):
-            return False
-
-        if user.is_superuser or getattr(user, 'isSuperAdmin', False):
-            return True
-
-        if view.action in ['list', 'retrieve']:
-            return True
-
-        if view.action == 'create':
-            user_perms = getattr(user, 'permissions', [])
-            return 'leaves:apply' in user_perms
+        path = request.path
+        if 'packages' in path:
+            return 'packages' in user_perms
+        elif 'subscribers' in path:
+            return 'subscribers' in user_perms
+        elif 'leads' in path:
+            return 'leads' in user_perms
+        elif 'cms' in path:
+            # Allow reading CMS/FAQs if they have either cms or faqs permission
+            if request.method == 'GET':
+                return 'cms' in user_perms or 'faqs' in user_perms
+            
+            # For CMS writes, determine if they are updating the FAQ copy block
+            try:
+                if isinstance(request.data, dict) and request.data.get('key') == 'faqs':
+                    return 'faqs' in user_perms
+            except Exception:
+                pass
+            return 'cms' in user_perms
+        elif 'faqs' in path:
+            return 'faqs' in user_perms
+        elif 'testimonials' in path:
+            return 'testimonials' in user_perms
+        elif 'lms' in path:
+            return 'lms' in user_perms
+        elif 'coupons' in path:
+            return 'coupons' in user_perms
+        elif 'employees' in path:
+            return 'staff' in user_perms
+        elif 'audit-logs' in path:
+            return 'audit_logs' in user_perms
+        elif 'billing-settings' in path:
+            return 'billing_settings' in user_perms
 
         return True
 
-    def has_object_permission(self, request, view, obj):
-        user = request.user
-        if user.is_superuser or getattr(user, 'isSuperAdmin', False):
+
+from rest_framework import exceptions
+
+class DRFCheckModePermission(permissions.BasePermission):
+    """
+    DRF permission class to enforce check_mode logic.
+    Raises 503 Service Unavailable for maintenance/down states and 403 Forbidden for readonly states.
+    """
+    def has_permission(self, request, view):
+        from core.decorators import get_system_mode_status
+        status_mode = get_system_mode_status(request)
+        if status_mode in ['down', 'maintenance']:
+            class ServiceUnavailable(exceptions.APIException):
+                status_code = 503
+                default_detail = f"Application currently in {status_mode} mode. Please try again later."
+                default_code = 'service_unavailable'
+            raise ServiceUnavailable()
+        if status_mode == 'readonly':
+            class ReadOnlyMode(exceptions.APIException):
+                status_code = 403
+                default_detail = "Application now in readonly mode. Writes are disabled."
+                default_code = 'readonly_mode'
+            raise ReadOnlyMode()
+        return True
+
+
+class DRFPlanPermissionRequired(permissions.BasePermission):
+    """
+    DRF permission class to validate user plan features.
+    Expects `required_plan_feature` view attribute.
+    """
+    def has_permission(self, request, view):
+        required = getattr(view, 'required_plan_feature', None)
+        if not required:
             return True
+        from core.decorators import has_plan_feature
+        if not has_plan_feature(request.user, required):
+            class PlanRestriction(exceptions.APIException):
+                status_code = 403
+                default_detail = "Your current subscription plan does not support this feature."
+                default_code = 'plan_restriction'
+            raise PlanRestriction()
+        return True
 
-        user_perms = getattr(user, 'permissions', [])
 
-        # Managing/Approving leaves
-        if view.action in ['update', 'partial_update']:
-            return 'leaves:approve' in user_perms or 'leaves:manage' in user_perms
+class ActionPermissionMixin:
+    """
+    Mixin for ViewSets to map list, retrieve, create, update, partial_update, destroy actions
+    to action-specific permission classes defined in `permission_classes_by_action`.
+    """
+    def get_permissions(self):
+        try:
+            return [permission() for permission in self.permission_classes_by_action[self.action]]
+        except (KeyError, AttributeError):
+            return super().get_permissions()
 
-        # Cancelling leaves (deleting)
-        if view.action == 'destroy':
-            # Owners can cancel their own pending leaves
-            if obj.employee == user and obj.status == 'Pending':
-                return True
-            return 'leaves:approve' in user_perms or 'leaves:manage' in user_perms
-
-        return False

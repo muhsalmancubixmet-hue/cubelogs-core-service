@@ -20,6 +20,7 @@ from django.utils import timezone
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import render, redirect
 from django.contrib.auth import authenticate, login, logout
+from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from django.urls import reverse
@@ -31,7 +32,9 @@ from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 
 from core.mixins import FilterMixinNew, TenantScopedViewSetMixin
-from core.permissions import HasRequiredPermission
+from core.permissions import HasRequiredPermission, ActionPermissionMixin, DRFCheckModePermission, DRFPlanPermissionRequired
+from attendance.permissions import IsLeaveOwnerOrManager
+from core.decorators import permission_required
 from core.module_registry.loader import load_modules
 from users.models import Employee, PERMISSION_FLAGS, Template
 from core.models import AuditLog, OrgSettings, Organization
@@ -53,11 +56,23 @@ from attendance.filters import (
 # --------------------------------------------------------------------------------
 # AttendanceLogViewSet: ViewSet managing daily employee clock-in and clock-out logs.
 # --------------------------------------------------------------------------------
-class AttendanceLogViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = AttendanceLog.objects.all().order_by('-date', '-id')
     serializer_class = AttendanceLogSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = AttendanceLogFilter
+
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'clock_in': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'clock_out': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+    }
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -69,12 +84,11 @@ class AttendanceLogViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.Mo
         return qs
 
     def get_permissions(self):
-        if self.action in ['clock_in', 'clock_out']:
-            return [permissions.IsAuthenticated()]
-        if self.action in ['list', 'retrieve']:
-            return [permissions.IsAuthenticated()]
-        self.required_permission = ['attendance:admin', 'attendance:management_portal']
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+        if self.action in ['clock_in', 'clock_out', 'list', 'retrieve']:
+            self.required_permission = None
+        else:
+            self.required_permission = ['attendance:admin', 'attendance:management_portal']
+        return super().get_permissions()
 
     @action(detail=False, methods=['post'], url_path='clock-in')
     def clock_in(self, request):
@@ -457,18 +471,28 @@ def calculate_recurring_holidays(organization, start_year, end_year):
 # --------------------------------------------------------------------------------
 # HolidayViewSet: ViewSet managing public holiday calendars for tenant organizations.
 # --------------------------------------------------------------------------------
-class HolidayViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class HolidayViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Holiday.objects.all().order_by('date')
     serializer_class = HolidaySerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = HolidayFilter
 
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+    }
+
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
             self.required_permission = ['holidays:view', 'holidays:manage', 'attendance:staff']
         else:
-            self.required_permission = 'holidays:manage'
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+            self.required_permission = ['holidays:manage']
+        return super().get_permissions()
 
 
     def list(self, request, *args, **kwargs):
@@ -509,7 +533,8 @@ class HolidayViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelVie
 # HolidaySettingsView: API view configuring recurring monthly and yearly holiday templates.
 # --------------------------------------------------------------------------------
 class HolidaySettingsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired]
+    required_plan_feature = 'is_attendance_enabled'
 
     def get(self, request):
         user = request.user
@@ -528,6 +553,7 @@ class HolidaySettingsView(APIView):
             "yearly_recurring_holidays": settings.yearly_recurring_holidays,
         }, status=status.HTTP_200_OK)
 
+    @method_decorator(permission_required('holidays:manage'))
     def patch(self, request):
         user = request.user
         if not user.organization:
@@ -558,19 +584,27 @@ class HolidaySettingsView(APIView):
 # --------------------------------------------------------------------------------
 # TemplateViewSet: ViewSet managing security role template profiles.
 # --------------------------------------------------------------------------------
-class TemplateViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class TemplateViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Template.objects.all().order_by('name')
     serializer_class = TemplateSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = TemplateFilter
 
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+    }
+
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
-            # Any authenticated user can read templates (needed for settings page + employee onboarding)
-            return [permissions.IsAuthenticated()]
-        # Create / update / delete requires admin:templates
-        self.required_permission = 'admin:templates'
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+            self.required_permission = None
+        else:
+            self.required_permission = 'admin:templates'
+        return super().get_permissions()
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -581,18 +615,28 @@ class TemplateViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelVi
 # --------------------------------------------------------------------------------
 # OfficeLocationViewSet: ViewSet managing primary geofence latitude and longitude boundaries.
 # --------------------------------------------------------------------------------
-class OfficeLocationViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class OfficeLocationViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = OfficeLocation.objects.all().order_by('id')
     serializer_class = OfficeLocationSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = OfficeLocationFilter
 
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+    }
+
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
-            # Any authenticated user can read locations (needed on settings page + clock-in)
-            return [permissions.IsAuthenticated()]
-        self.required_permission = 'locations:manage'
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+            self.required_permission = None
+        else:
+            self.required_permission = 'locations:manage'
+        return super().get_permissions()
 
 
 
@@ -600,33 +644,54 @@ class OfficeLocationViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.M
 # --------------------------------------------------------------------------------
 # ScheduleViewSet: ViewSet managing shift times mapped to specific roles.
 # --------------------------------------------------------------------------------
-class ScheduleViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class ScheduleViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Schedule.objects.all().order_by('designation')
     serializer_class = ScheduleSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = ScheduleFilter
 
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+    }
+
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
             self.required_permission = ['attendance:staff', 'attendance:management_portal']
         else:
-            self.required_permission = 'attendance:management_portal'
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+            self.required_permission = ['attendance:management_portal']
+        return super().get_permissions()
 
 
 
 # --------------------------------------------------------------------------------
 # OrgSettingsViewSet: ViewSet managing branding logos and custom attendance validation tolerances.
 # --------------------------------------------------------------------------------
-class OrgSettingsViewSet(viewsets.ModelViewSet):
+class OrgSettingsViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
     queryset = OrgSettings.objects.all()
     serializer_class = OrgSettingsSerializer
 
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'current_settings': [permissions.IsAuthenticated, DRFCheckModePermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+    }
+
     def get_permissions(self):
         if self.action in ['list', 'retrieve', 'current_settings'] and self.request.method == 'GET':
-            return [permissions.IsAuthenticated()]
-        self.required_permission = ['settings:branding', 'settings:billing', 'attendance:management_portal']
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+            self.required_permission = None
+        else:
+            self.required_permission = ['settings:branding', 'settings:billing', 'attendance:management_portal']
+        return super().get_permissions()
 
     def get_object(self):
         user = self.request.user
@@ -691,7 +756,7 @@ class OrgSettingsViewSet(viewsets.ModelViewSet):
 class AuditLogViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.all().order_by('-createdAt', '-id')
     serializer_class = AuditLogSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -740,18 +805,28 @@ class PermissionsConfigView(APIView):
 # --------------------------------------------------------------------------------
 # LeaveTypeViewSet: ViewSet managing leave type configurations and restrictions.
 # --------------------------------------------------------------------------------
-class LeaveTypeViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class LeaveTypeViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = LeaveType.objects.all().order_by('-id')
     serializer_class = LeaveTypeSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = LeaveTypeFilter
 
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+    }
+
     def get_permissions(self):
         if self.action in ['list', 'retrieve']:
             self.required_permission = ['leaves:apply', 'leaves:manage']
         else:
-            self.required_permission = 'leaves:manage'
-        return [permissions.IsAuthenticated(), HasRequiredPermission()]
+            self.required_permission = ['leaves:manage']
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -793,11 +868,22 @@ class LeaveTypeViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelV
 # --------------------------------------------------------------------------------
 # LeaveViewSet: ViewSet managing employee leave application requests.
 # --------------------------------------------------------------------------------
-class LeaveViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+class LeaveViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Leave.objects.all().order_by('-id')
     serializer_class = LeaveSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = LeaveFilter
+
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+        'update_status': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, IsLeaveOwnerOrManager],
+    }
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -809,8 +895,7 @@ class LeaveViewSet(FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewS
         return qs
 
     def get_permissions(self):
-        from core.permissions import IsLeaveOwnerOrManager
-        return [permissions.IsAuthenticated(), IsLeaveOwnerOrManager()]
+        return super().get_permissions()
 
 
 
