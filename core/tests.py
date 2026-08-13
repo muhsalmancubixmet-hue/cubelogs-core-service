@@ -291,8 +291,9 @@ class LeadTests(APITestCase):
         response = self.client.get(url, format='json')
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['name'], 'Another Lead')
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['name'], 'Another Lead')
 
 
 class LeadWorkflowTests(APITestCase):
@@ -473,7 +474,8 @@ class BackofficeTests(APITestCase):
         # List
         response = self.client.get(url, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(results), 1)
 
     def test_subscriber_crud_as_superadmin(self):
         from subscribers.models import SubscriberAccount
@@ -611,15 +613,17 @@ class UnifiedConnectionFrameworkTests(APITestCase):
         cms_url = '/api/cms/'
         response = self.client.get(cms_url, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['key'], 'hero_title')
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['key'], 'hero_title')
         
         # LMS
         lms_url = '/api/lms/'
         response = self.client.get(lms_url, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['title'], 'Intro to Compliance')
+        results2 = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(results2), 1)
+        self.assertEqual(results2[0]['title'], 'Intro to Compliance')
 
     def test_cms_lms_write_endpoints_denied_for_anonymous_and_regular(self):
         # CMS Create

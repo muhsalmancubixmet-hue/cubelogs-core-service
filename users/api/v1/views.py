@@ -26,7 +26,7 @@ from core.models import AuditLog
 from core.mixins import FilterMixinNew
 from core.permissions import ActionPermissionMixin, DRFCheckModePermission, HasRequiredPermission
 from users.filters import EmployeeFilter
-from users.api.v1.serializers import EmployeeSerializer, CustomTokenRefreshSerializer
+from users.api.v1.serializers import EmployeeSerializer, RoleSerializer, PermissionFlagSerializer, CustomTokenRefreshSerializer
 from core.module_registry.loader import load_modules
 from core.decorators import check_mode
 from core.throttling import AuthRateThrottle
@@ -42,12 +42,138 @@ def _enrich_user_data(user_data, organization):
             user_data['subscription']['is_attendance_enabled'] = org_settings.is_attendance_enabled
             user_data['subscription']['is_project_enabled'] = org_settings.is_project_enabled
 
-        if isinstance(user_data.get('permissions'), list):
-            if user_data['is_attendance_enabled'] and 'attendance:view' not in user_data['permissions']:
-                user_data['permissions'].append('attendance:view')
-            if user_data['is_project_enabled'] and 'project:view' not in user_data['permissions']:
-                user_data['permissions'].append('project:view')
     return user_data
+
+
+class PermissionFlagViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PermissionFlagSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        from users.roles import sync_default_roles
+        from users.models import PermissionFlag
+        sync_default_roles()
+        return PermissionFlag.objects.filter(is_active=True).order_by('module', 'category', 'key')
+
+
+class RoleViewSet(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+    required_permission = 'roles.view'
+    serializer_class = RoleSerializer
+
+    def get_queryset(self):
+        from users.roles import sync_default_roles
+        from users.models import Role
+        from django.db.models import Q
+        sync_default_roles()
+
+        user = self.request.user
+        qs = Role.objects.filter(is_active=True).prefetch_related('permissions', 'employees')
+
+        if not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
+            if user.organization:
+                qs = qs.filter(Q(organization=user.organization) | Q(organization__isnull=True))
+            else:
+                qs = qs.filter(organization__isnull=True)
+
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(Q(name__icontains=search) | Q(label__icontains=search) | Q(slug__icontains=search))
+
+        role_type = self.request.query_params.get('type')
+        if role_type == 'system':
+            qs = qs.filter(is_system_role=True)
+        elif role_type == 'custom':
+            qs = qs.filter(is_system_role=False)
+
+        return qs
+
+    def perform_create(self, serializer):
+        role = serializer.save()
+        user = self.request.user
+        AuditLog.objects.create(
+            employee=user,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            action='ROLE_CREATED',
+            details=f"Created custom role '{role.name}' ({role.slug}).",
+            ipAddress=self.request.META.get('REMOTE_ADDR')
+        )
+
+    def perform_update(self, serializer):
+        role = serializer.save()
+        user = self.request.user
+        AuditLog.objects.create(
+            employee=user,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            action='ROLE_UPDATED',
+            details=f"Updated role '{role.name}' ({role.slug}).",
+            ipAddress=self.request.META.get('REMOTE_ADDR')
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        role = self.get_object()
+        if role.is_system_role:
+            return Response(
+                {"detail": f"System role '{role.name}' is protected and cannot be deleted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if role.employees.count() > 0:
+            return Response(
+                {"detail": f"This role is assigned to {role.employees.count()} employees. Please reassign employees first before deleting."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        role_name = role.name
+        role.delete()
+        user = request.user
+        AuditLog.objects.create(
+            employee=user,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            action='ROLE_DELETED',
+            details=f"Deleted custom role '{role_name}'.",
+            ipAddress=request.META.get('REMOTE_ADDR')
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'], url_path='duplicate')
+    def duplicate(self, request, pk=None):
+        role = self.get_object()
+        new_name = request.data.get('name')
+        new_label = request.data.get('label') or new_name
+
+        if not new_name:
+            return Response({"name": ["New role name is required for duplication."]}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.utils.text import slugify
+        from users.models import Role
+        new_slug = slugify(new_name)
+
+        if Role.objects.filter(slug=new_slug, organization=request.user.organization).exists():
+            return Response({"name": ["A role with this name/slug already exists."]}, status=status.HTTP_400_BAD_REQUEST)
+
+        duplicated_role = Role.objects.create(
+            name=new_name,
+            slug=new_slug,
+            label=new_label,
+            description=f"Duplicated from '{role.name}'. " + (role.description or ''),
+            organization=request.user.organization,
+            is_system_role=False,
+            is_active=True
+        )
+        duplicated_role.permissions.set(role.permissions.all())
+
+        user = request.user
+        AuditLog.objects.create(
+            employee=user,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            action='ROLE_DUPLICATED',
+            details=f"Duplicated role '{role.name}' to create '{new_name}'.",
+            ipAddress=request.META.get('REMOTE_ADDR')
+        )
+
+        serializer = self.get_serializer(duplicated_role)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 
 
@@ -67,6 +193,8 @@ class CustomTokenObtainPairView(APIView):
             return Response({'error': 'Invalid email or security password.'}, status=status.HTTP_401_UNAUTHORIZED)
 
         login(request, user)
+        from django.middleware.csrf import get_token
+        get_token(request)
 
         serializer = EmployeeSerializer(user)
         user_data = serializer.data
@@ -93,6 +221,8 @@ class CurrentUserView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        from django.middleware.csrf import get_token
+        get_token(request)
         serializer = EmployeeSerializer(request.user)
         user_data = dict(serializer.data)
         # Enrich with subscription, feature flags, and permission gates
@@ -363,7 +493,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         if self.action in ['list', 'retrieve', 'revoke']:
             self.required_permission = None
         else:
-            self.required_permission = 'admin:employees'
+            self.required_permission = ['admin:employees', 'roles.edit', 'roles.assign', 'permissions.manage', 'roles.create']
         return super().get_permissions()
 
     def perform_create(self, serializer):

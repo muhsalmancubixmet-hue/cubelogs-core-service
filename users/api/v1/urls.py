@@ -13,7 +13,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 # APPLICATION SPECIFIC
 from users.api.v1.views import (
-    EmployeeViewSet, CustomTokenObtainPairView, CurrentUserView,
+    EmployeeViewSet, RoleViewSet, PermissionFlagViewSet, CustomTokenObtainPairView, CurrentUserView,
     MagicLoginView, ChangePasswordView, PasswordResetRequestView,
     PasswordResetValidateView, PasswordResetConfirmView, PermissionsConfigView,
     backoffice_view, backoffice_login_view, CustomTokenRefreshView, LogoutView
@@ -22,6 +22,8 @@ from users.api.v1.serializers import CustomTokenRefreshSerializer
 
 router = DefaultRouter()
 router.register('employees', EmployeeViewSet, basename='employee')
+router.register('roles', RoleViewSet, basename='role')
+router.register('permissions-flags', PermissionFlagViewSet, basename='permission-flag')
 
 urlpatterns = [
     # Auth endpoints

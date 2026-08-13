@@ -8,8 +8,18 @@
         "icon": "AttendanceIcon",
         "required_subscription_flag": "is_attendance_enabled"
       },
+      "navigation": [
+        { "id": "attendance_clocking", "label": "Attendance & Clocking", "path": "/attendance", "permission": "attendance:staff" },
+        { "id": "attendance_portal", "label": "Management Portal", "path": "/attendance/management-portal", "permission": "attendance:management_portal" },
+        { "id": "leaves_apply", "label": "Apply Leave", "path": "/attendance?tab=leaves-apply", "permission": "leaves:apply" },
+        { "id": "leaves_approve", "label": "Leave Approvals", "path": "/attendance?tab=leaves-approve", "permission": "leaves:approve" },
+        { "id": "leaves_manage", "label": "Leave Types Config", "path": "/attendance?tab=leaves-manage", "permission": "leaves:manage" },
+        { "id": "holidays_view", "label": "Holiday Calendar", "path": "/attendance?tab=holidays-view", "permission": "holidays:view" },
+        { "id": "holidays_manage", "label": "Configure Holidays", "path": "/attendance?tab=holidays-manage", "permission": "holidays:manage" }
+      ],
       "functional_capabilities": [
         { "id": "attendance:staff", "label": "Attendance & Clocking", "path": "/attendance", "tab": "" },
+        { "id": "attendance:admin", "label": "Attendance Rules Config", "path": "/admin/settings", "tab": "attendance-config" },
         { "id": "leaves:apply", "label": "Apply Leave Form", "path": "/attendance", "tab": "leaves-apply" },
         { "id": "leaves:approve", "label": "Leave Approval Portal", "path": "/attendance", "tab": "leaves-approve" },
         { "id": "leaves:manage", "label": "Configure Leave Types", "path": "/attendance", "tab": "leaves-manage" },
@@ -23,20 +33,51 @@
       }
     },
     {
-      "id": "tasks",
+      "id": "project_management",
       "enabled": true,
       "metadata": {
         "name": "Project Management",
         "icon": "TasksIcon",
+        "path": "/projects",
         "required_subscription_flag": "is_project_enabled"
       },
+      "navigation": [
+        { "id": "projects", "label": "Projects", "path": "/projects", "permission": "projects:view" }
+      ],
       "functional_capabilities": [
-        { "id": "tasks:create", "label": "Add Task Workspace", "path": "/tasks", "tab": "add" },
-        { "id": "tasks:view", "label": "My Tasks View", "path": "/tasks", "tab": "my" }
+        { "id": "projects:view", "label": "View Projects", "path": "/projects", "tab": "" },
+        { "id": "projects:create", "label": "Create Projects", "path": "/projects", "tab": "create" },
+        { "id": "projects:update", "label": "Edit Projects", "path": "/projects", "tab": "edit" },
+        { "id": "projects:delete", "label": "Delete Projects", "path": "/projects", "tab": "delete" },
+        { "id": "projects:members_manage", "label": "Manage Project Members", "path": "/projects", "tab": "members" },
+        { "id": "project_stories:view", "label": "View Project Sections", "path": "/projects", "tab": "sections" },
+        { "id": "project_stories:create", "label": "Create Project Sections", "path": "/projects", "tab": "sections-create" },
+        { "id": "project_stories:update", "label": "Edit Project Sections", "path": "/projects", "tab": "sections-edit" },
+        { "id": "project_stories:delete", "label": "Delete Project Sections", "path": "/projects", "tab": "sections-delete" },
+        { "id": "project_tasks:view_all", "label": "View All Project Tasks", "path": "/projects", "tab": "tasks-all" },
+        { "id": "project_tasks:view_own", "label": "View Assigned Project Tasks", "path": "/projects", "tab": "tasks-my" },
+        { "id": "project_tasks:create", "label": "Create Project Tasks", "path": "/projects", "tab": "tasks-create" },
+        { "id": "project_tasks:update_all", "label": "Edit All Project Tasks", "path": "/projects", "tab": "tasks-edit" },
+        { "id": "project_tasks:update_own", "label": "Update Assigned Task Status", "path": "/projects", "tab": "tasks-status" },
+        { "id": "project_tasks:delete", "label": "Delete Project Tasks", "path": "/projects", "tab": "tasks-delete" },
+        { "id": "project_statuses:view", "label": "View Project Statuses", "path": "/projects", "tab": "" },
+        { "id": "project_statuses:create", "label": "Create Project Statuses", "path": "/projects", "tab": "" },
+        { "id": "project_statuses:update", "label": "Edit Project Statuses", "path": "/projects", "tab": "" },
+        { "id": "project_statuses:delete", "label": "Delete Project Statuses", "path": "/projects", "tab": "" },
+        { "id": "project_epics:view", "label": "View Epics", "path": "/projects", "tab": "epics" },
+        { "id": "project_epics:create", "label": "Create Epics", "path": "/projects", "tab": "epics-create" },
+        { "id": "project_epics:update", "label": "Edit Epics", "path": "/projects", "tab": "epics-edit" },
+        { "id": "project_epics:delete", "label": "Delete Epics", "path": "/projects", "tab": "epics-delete" },
+        { "id": "project_sprints:view", "label": "View Sprints", "path": "/projects", "tab": "sprints" },
+        { "id": "project_sprints:create", "label": "Create Sprints", "path": "/projects", "tab": "sprints-create" },
+        { "id": "project_sprints:update", "label": "Edit Sprints", "path": "/projects", "tab": "sprints-edit" },
+        { "id": "project_sprints:manage", "label": "Manage Sprint Lifecycle", "path": "/projects", "tab": "sprints-manage" },
+        { "id": "project_sprints:delete", "label": "Delete Sprints", "path": "/projects", "tab": "sprints-delete" }
       ],
       "dynamic_sub_feature_gates": {
         "kanban": true,
-        "time_tracking": false
+        "time_tracking": false,
+        "project_reports": false
       }
     }
   ]

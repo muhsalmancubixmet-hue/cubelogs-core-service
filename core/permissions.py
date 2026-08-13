@@ -4,6 +4,7 @@ class HasRequiredPermission(permissions.BasePermission):
     """
     Custom permission class to validate user permissions in DRF views.
     Expects `required_permission` attribute on the ViewSet/APIView.
+    Uses central has_fine_grained_permission evaluator.
     """
     def has_permission(self, request, view):
         user = request.user
@@ -17,13 +18,8 @@ class HasRequiredPermission(permissions.BasePermission):
         if not required_permission:
             return True
 
-        user_perms = getattr(user, 'permissions', [])
-        if not isinstance(user_perms, list):
-            user_perms = []
-
-        if isinstance(required_permission, (list, tuple)):
-            return any(p in user_perms for p in required_permission)
-        return required_permission in user_perms
+        from core.decorators import has_fine_grained_permission
+        return has_fine_grained_permission(user, required_permission)
 
 
 class IsSuperAdminUser(permissions.BasePermission):

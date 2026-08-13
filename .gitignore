@@ -88,6 +88,8 @@ env/
 # Local env files
 .env
 .env.*
+!.env.example
 
 # Media uploads
 media/
+private_media/

@@ -56,24 +56,63 @@ COMPANY_WEBSITE = env('COMPANY_WEBSITE', default='https://cubelogs.com')
 SECRET_KEY = env('SECRET_KEY')
 DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
-CORS_ALLOW_ALL_ORIGINS = env('CORS_ALLOW_ALL_ORIGINS')
-CORS_ALLOWED_ORIGINS = env('CORS_ALLOWED_ORIGINS')
+CORS_ALLOW_ALL_ORIGINS = env.bool(
+    "CORS_ALLOW_ALL_ORIGINS",
+    default=False,
+)
+
+CORS_ALLOWED_ORIGINS = env.list(
+    "CORS_ALLOWED_ORIGINS",
+    default=[],
+)
+
 if is_dev:
-    dev_origins = ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001']
-    for o in dev_origins:
-        if o not in CORS_ALLOWED_ORIGINS:
-            CORS_ALLOWED_ORIGINS.append(o)
+    dev_origins = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://192.168.220.36:3000",
+        "http://192.168.220.36:3001",
+        "http://192.168.220.42:3000",
+        "http://192.168.220.42:3001",
+        "http://192.168.220.44:3000",
+        "http://192.168.220.44:3001",
+    ]
+
+    import socket
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if not ip.startswith("127."):
+                dev_origins.append(f"http://{ip}:3000")
+                dev_origins.append(f"http://{ip}:3001")
+    except Exception:
+        pass
+
+    for origin in dev_origins:
+        if origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(origin)
 
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = env('CSRF_TRUSTED_ORIGINS', default=[
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'http://127.0.0.1:3000',
-    'http://127.0.0.1:3001',
-    'https://cubelogs-dashboard.vercel.app',
-    'https://cubelogs-website.vercel.app',
-])
 
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://192.168.220.36:3000",
+        "http://192.168.220.36:3001",
+        "http://192.168.220.42:3000",
+        "http://192.168.220.42:3001",
+        "http://192.168.220.44:3000",
+        "http://192.168.220.44:3001",
+        "https://cubelogs-dashboard.vercel.app",
+        "https://cubelogs-website.vercel.app",
+    ],
+)
 
 
 # ------------------------------------------------------------------------------
@@ -108,12 +147,14 @@ DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL')
 # integrated into this project.
 # ------------------------------------------------------------------------------
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'rest_framework',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
@@ -123,7 +164,7 @@ INSTALLED_APPS = [
     'users',
     'attendance',
     'company',
-    'tasks',
+    'projects',
     'subscribers',
 ]
 
@@ -147,6 +188,24 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'cubelogs.urls'
 WSGI_APPLICATION = 'cubelogs.wsgi.application'
+ASGI_APPLICATION = 'cubelogs.asgi.application'
+
+REDIS_URL = env('REDIS_URL', default=None)
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels_redis.core.RedisChannelLayer',
+            'CONFIG': {
+                "hosts": [REDIS_URL],
+            },
+        },
+    }
+else:
+    CHANNEL_LAYERS = {
+        'default': {
+            'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
 
 
 # ------------------------------------------------------------------------------
@@ -236,12 +295,29 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
     'DEFAULT_SCHEMA_CLASS': 'rest_framework.schemas.coreapi.AutoSchema',
+    "DEFAULT_PAGINATION_CLASS": "core.pagination.StandardResultsSetPagination",
+    "PAGE_SIZE": 50,
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "100/day",
+        "user": "1000/hour",
+        "auth": "10/minute",
+        "uploads": "20/minute",
+        "webhooks": "60/minute",
+        "burst": "60/minute",
+    },
 }
 
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_HTTPONLY = False
+SESSION_COOKIE_SECURE = not is_dev   # True in production (HTTPS only)
+CSRF_COOKIE_HTTPONLY = False          # Must stay False — JS needs to read the CSRF token
 CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SECURE = not is_dev       # True in production (HTTPS only)
 
 
 # ------------------------------------------------------------------------------
@@ -296,6 +372,14 @@ STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+PRIVATE_MEDIA_ROOT = BASE_DIR / 'private_media'
+
+import sys, tempfile
+is_testing = 'test' in sys.argv or 'pytest' in sys.modules
+if is_testing:
+    _test_media_dir = Path(tempfile.mkdtemp(prefix='cubelogs_test_media_'))
+    MEDIA_ROOT = _test_media_dir / 'media'
+    PRIVATE_MEDIA_ROOT = _test_media_dir / 'private_media'
 
 
 # ------------------------------------------------------------------------------
@@ -369,6 +453,13 @@ LOGGING = {
 # Enhanced HTTP headers, cookies, and redirect configs enforced in production.
 # ------------------------------------------------------------------------------
 if not is_dev:
+    import re
+    if CORS_ALLOW_ALL_ORIGINS and CORS_ALLOW_CREDENTIALS:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured("CORS_ALLOW_ALL_ORIGINS cannot be True when CORS_ALLOW_CREDENTIALS is True in production.")
+
+    CSRF_TRUSTED_ORIGINS = [origin for origin in CSRF_TRUSTED_ORIGINS if not re.search(r'localhost|127\.0\.0\.1|192\.168\.', origin)]
+
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
@@ -377,4 +468,7 @@ if not is_dev:
     CSRF_COOKIE_SECURE = True
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    X_FRAME_OPTIONS = 'DENY'
+    SECURE_REFERRER_POLICY = 'same-origin'
 
