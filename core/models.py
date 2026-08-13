@@ -127,7 +127,7 @@ class OrgSettings(BaseModel):
         try:
             return OrganizationModule.objects.filter(
                 organization=self.organization,
-                module_id='tasks',
+                module_id__in=['project_management', 'tasks', 'project'],
                 enabled=True
             ).exists()
         except Exception:
@@ -140,14 +140,15 @@ class OrgSettings(BaseModel):
         if not hasattr(self, 'organization') or not self.organization:
             return
         try:
-            org_module, _ = OrganizationModule.objects.get_or_create(
-                organization=self.organization,
-                module_id='tasks',
-                defaults={'enabled': value, 'activated_at': timezone.now()}
-            )
-            if org_module.enabled != value:
-                org_module.enabled = value
-                org_module.save()
+            for mod_id in ['project_management', 'tasks', 'project']:
+                org_module, _ = OrganizationModule.objects.get_or_create(
+                    organization=self.organization,
+                    module_id=mod_id,
+                    defaults={'enabled': value, 'activated_at': timezone.now()}
+                )
+                if org_module.enabled != value:
+                    org_module.enabled = value
+                    org_module.save()
         except Exception:
             pass
 

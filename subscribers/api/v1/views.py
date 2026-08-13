@@ -524,9 +524,9 @@ class BackofficeRegisterCompanyView(APIView):
                     base_perms.append('attendance:view')
                 base_perms.extend([p['id'] for p in PERMISSION_FLAGS if p['id'].startswith('attendance') or p['id'].startswith('leaves') or p['id'].startswith('holidays')])
             if settings.is_project_enabled:
-                if 'project:view' not in base_perms:
-                    base_perms.append('project:view')
-                base_perms.extend([p['id'] for p in PERMISSION_FLAGS if p['id'].startswith('tasks')])
+                if 'projects:view' not in base_perms:
+                    base_perms.append('projects:view')
+                base_perms.extend([p['id'] for p in PERMISSION_FLAGS if p['id'].startswith('projects') or p['id'].startswith('project_')])
 
             admin_user.permissions = base_perms
             admin_user.save()
@@ -610,8 +610,8 @@ The CubeLogs Team
                 if isinstance(user_data.get('permissions'), list):
                     if user_data['is_attendance_enabled'] and 'attendance:view' not in user_data['permissions']:
                         user_data['permissions'].append('attendance:view')
-                    if user_data['is_project_enabled'] and 'project:view' not in user_data['permissions']:
-                        user_data['permissions'].append('project:view')
+                    if user_data['is_project_enabled'] and 'projects:view' not in user_data['permissions']:
+                        user_data['permissions'].append('projects:view')
 
             return Response({'message': 'Company successfully registered.', 'user': user_data}, status=status.HTTP_201_CREATED)
         except Exception as e:

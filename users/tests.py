@@ -36,7 +36,7 @@ class SessionAuthLifecycleTestCase(TestCase):
             first_name="Session",
             last_name="User",
             organization=self.org,
-            permissions=["tasks:create", "tasks:view", "dashboard"]
+            permissions=["projects:create", "projects:view", "dashboard"]
         )
 
     def test_password_login_creates_session(self):

@@ -86,21 +86,50 @@ def _plan_restricted_response(request):
 # Shared Evaluators
 # --------------------------------------------------------------------------------
 
-def has_fine_grained_permission(user, permissions):
+def has_fine_grained_permission(user, permissions, project=None):
     """
-    Check if the user is a superuser/superadmin or possesses one of the required permissions.
+    Check if the user is a superuser/superadmin or possesses one of the required permissions,
+    evaluating user's Effective Permissions = (Role Permissions + Extra User Permissions) - Denied User Permissions.
     """
     if not (user and user.is_authenticated):
         return False
     if user.is_superuser or getattr(user, 'isSuperAdmin', False):
         return True
-    user_perms = getattr(user, 'permissions', [])
+
+    if hasattr(user, 'has_capability'):
+        return user.has_capability(permissions, project=project)
+
+    if hasattr(user, 'get_effective_permissions'):
+        user_perms = user.get_effective_permissions()
+    else:
+        user_perms = getattr(user, 'permissions', [])
+
     if not isinstance(user_perms, list):
         user_perms = []
-    # If permissions is a single string, convert to list
+
     if isinstance(permissions, str):
         permissions = [permissions]
     return any(p in user_perms for p in permissions)
+
+def _is_module_explicitly_disabled(org, module_ids):
+    """
+    Returns True only if there is an OrganizationModule record with enabled=False.
+    Returns False when no record exists (i.e., module was never explicitly disabled).
+    This is distinct from OrgSettings.is_project_enabled which returns False when no record exists
+    (used by billing to only charge for explicitly-enabled modules).
+    """
+    try:
+        from core.models import OrganizationModule
+        if isinstance(module_ids, str):
+            module_ids = [module_ids]
+        return OrganizationModule.objects.filter(
+            organization=org,
+            module_id__in=module_ids,
+            enabled=False
+        ).exists()
+    except Exception:
+        return False
+
 
 def has_plan_feature(user, features):
     """
@@ -108,12 +137,27 @@ def has_plan_feature(user, features):
     """
     if not (user and user.is_authenticated):
         return False
-    if user.is_superuser or getattr(user, 'isSuperAdmin', False):
-        return True
-    plan_features = get_user_plan_features(user)
+
     if isinstance(features, str):
         features = [features]
-    return any(f in plan_features for f in features)
+
+    # Org module gate: block only if the module is EXPLICITLY disabled.
+    # If no OrganizationModule record exists (org never set up modules), allow by default.
+    if 'is_project_enabled' in features:
+        if hasattr(user, 'organization') and user.organization:
+            if _is_module_explicitly_disabled(user.organization, ['project_management', 'tasks', 'project']):
+                return False
+
+    if 'is_attendance_enabled' in features:
+        if hasattr(user, 'organization') and user.organization:
+            if _is_module_explicitly_disabled(user.organization, ['attendance']):
+                return False
+
+    if user.is_superuser or getattr(user, 'isSuperAdmin', False):
+        return True
+
+    user_features = get_user_plan_features(user)
+    return any(f in user_features for f in features)
 
 def get_system_mode_status(request):
     """
@@ -217,7 +261,7 @@ def get_user_plan_features(user):
     
     if user.is_superuser or getattr(user, 'isSuperAdmin', False):
         from users.models import PERMISSION_FLAGS
-        return [p['id'] for p in PERMISSION_FLAGS]
+        return [p['id'] for p in PERMISSION_FLAGS] + ['is_attendance_enabled', 'is_project_enabled']
 
     if not user.organization:
         from users.models import PERMISSION_FLAGS
@@ -233,9 +277,23 @@ def get_user_plan_features(user):
     sub = SubscriberAccount.objects.filter(email=target_email, isActive=True).first()
     packageName = sub.packageName if sub else "Free Package"
     pkg = SubscriptionPackage.objects.filter(name=packageName).first()
-    if not pkg:
-        return ['is_attendance_enabled', 'is_project_enabled']
-    return pkg.features
+    features = list(pkg.features) if (pkg and isinstance(pkg.features, list)) else []
+
+    # Append org-level module flags dynamically if OrgSettings exists and the module is not explicitly disabled.
+    # Uses the same "explicitly disabled" semantic as has_plan_feature's org module gate:
+    # a module flag is appended unless there's a record with enabled=False.
+    # Only runs when OrgSettings is present; if absent (test orgs, fresh orgs), pkg.features is authoritative.
+    if hasattr(user, 'organization') and user.organization:
+        settings = getattr(user.organization, 'settings', None)
+        if settings is not None:
+            if 'is_project_enabled' not in features:
+                if not _is_module_explicitly_disabled(user.organization, ['project_management', 'tasks', 'project']):
+                    features.append('is_project_enabled')
+            if 'is_attendance_enabled' not in features:
+                if not _is_module_explicitly_disabled(user.organization, ['attendance']):
+                    features.append('is_attendance_enabled')
+
+    return features
 
 
 def plan_permission_required(*features):

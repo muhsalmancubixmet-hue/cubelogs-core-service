@@ -20,3 +20,4 @@ class AuthRateThrottle(SimpleRateThrottle):
             'scope': self.scope,
             'ident': ident
         }
+

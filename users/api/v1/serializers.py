@@ -13,7 +13,7 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.exceptions import InvalidToken
 
 # APPLICATION SPECIFIC
-from users.models import Employee
+from users.models import Employee, Role, PermissionFlag
 
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
     def validate(self, attrs):
@@ -23,9 +23,84 @@ class CustomTokenRefreshSerializer(TokenRefreshSerializer):
             raise InvalidToken("User does not exist or has been deleted.")
 
 
+class PermissionFlagSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PermissionFlag
+        fields = ['id', 'key', 'name', 'description', 'module', 'category', 'is_active']
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    permissions = serializers.SerializerMethodField()
+    permission_keys = serializers.ListField(child=serializers.CharField(), write_only=True, required=False)
+    users_count = serializers.SerializerMethodField()
+    permissions_count = serializers.SerializerMethodField()
+    assigned_employees = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Role
+        fields = [
+            'id', 'name', 'slug', 'label', 'description', 'is_system_role',
+            'is_active', 'organization', 'permissions', 'permission_keys',
+            'users_count', 'permissions_count', 'assigned_employees',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['is_system_role', 'created_at', 'updated_at']
+
+    def get_permissions(self, obj):
+        return list(obj.permissions.values_list('key', flat=True))
+
+    def get_users_count(self, obj):
+        return obj.employees.count()
+
+    def get_permissions_count(self, obj):
+        return obj.permissions.count()
+
+    def get_assigned_employees(self, obj):
+        return [
+            {
+                'id': emp.id,
+                'name': f"{emp.first_name} {emp.last_name}".strip() or emp.email,
+                'email': emp.email,
+                'designation': emp.designation or 'Employee'
+            }
+            for emp in obj.employees.all()[:10]
+        ]
+
+    def create(self, validated_data):
+        permission_keys = validated_data.pop('permission_keys', None)
+        request = self.context.get('request')
+        if request and request.user and request.user.organization:
+            validated_data['organization'] = request.user.organization
+
+        name = validated_data.get('name', '')
+        if not validated_data.get('slug'):
+            from django.utils.text import slugify
+            validated_data['slug'] = slugify(name)
+
+        role = super().create(validated_data)
+        if permission_keys is not None:
+            perm_objs = PermissionFlag.objects.filter(key__in=permission_keys)
+            role.permissions.set(perm_objs)
+        return role
+
+    def update(self, instance, validated_data):
+        permission_keys = validated_data.pop('permission_keys', None)
+        if instance.is_system_role:
+            # System roles cannot be renamed or change slug
+            validated_data.pop('name', None)
+            validated_data.pop('slug', None)
+
+        role = super().update(instance, validated_data)
+        if permission_keys is not None:
+            perm_objs = PermissionFlag.objects.filter(key__in=permission_keys)
+            role.permissions.set(perm_objs)
+        return role
+
+
 class EmployeeSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     subscription = serializers.SerializerMethodField()
+    effective_permissions = serializers.SerializerMethodField()
     email = serializers.EmailField()
     username = serializers.CharField(required=False)
 
@@ -39,9 +114,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
         model = Employee
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name', 'name',
-            'phone', 'designation', 'isSuperAdmin', 'is_active', 'employment_status',
-            'useDefaultPermissions', 'permissions', 'profilePhoto', 'password',
-            'subscription', 'organization'
+            'phone', 'designation', 'role', 'isSuperAdmin', 'is_active', 'employment_status',
+            'useDefaultPermissions', 'permissions', 'extra_permissions', 'denied_permissions', 'effective_permissions',
+            'profilePhoto', 'password', 'subscription', 'organization'
         ]
         extra_kwargs = {
             'password': {'write_only': True, 'required': False},
@@ -50,6 +125,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     def get_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.email
+
+    def get_effective_permissions(self, obj):
+        return obj.get_effective_permissions()
     def get_subscription(self, obj):
         from subscribers.models import SubscriberAccount, SubscriptionPackage
         from users.models import Employee
@@ -229,6 +307,24 @@ class EmployeeSerializer(serializers.ModelSerializer):
             employee._raw_password = raw_password
             employee.save()
 
+        # Resolve relational Role FK
+        role_input = self.initial_data.get('role')
+        if role_input:
+            from django.utils.text import slugify
+            from users.models import Role
+            role_obj = None
+            if isinstance(role_input, Role):
+                role_obj = role_input
+            elif isinstance(role_input, int) or (isinstance(role_input, str) and role_input.isdigit()):
+                role_obj = Role.objects.filter(id=int(role_input)).first()
+            elif isinstance(role_input, str):
+                role_obj = Role.objects.filter(slug=slugify(role_input)).first() or Role.objects.filter(name=role_input).first()
+            
+            if role_obj:
+                employee.role = role_obj
+                employee.role_name = role_obj.name
+                employee.save(update_fields=['role', 'role_name'])
+
         # Send admin onboarding email via service
         try:
             UserService.send_admin_onboarding_email(employee, raw_password, synchronous=True)
@@ -253,6 +349,24 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validated_data['first_name'] = parts[0]
             validated_data['last_name'] = parts[1] if len(parts) > 1 else ''
         employee = super().update(instance, validated_data)
+
+        role_input = self.initial_data.get('role')
+        if role_input:
+            from django.utils.text import slugify
+            from users.models import Role
+            role_obj = None
+            if isinstance(role_input, Role):
+                role_obj = role_input
+            elif isinstance(role_input, int) or (isinstance(role_input, str) and role_input.isdigit()):
+                role_obj = Role.objects.filter(id=int(role_input)).first()
+            elif isinstance(role_input, str):
+                role_obj = Role.objects.filter(slug=slugify(role_input)).first() or Role.objects.filter(name=role_input).first()
+
+            if role_obj:
+                employee.role = role_obj
+                employee.role_name = role_obj.name
+                employee.save(update_fields=['role', 'role_name'])
+
         if password:
             employee.set_password(password)
             employee.save()
