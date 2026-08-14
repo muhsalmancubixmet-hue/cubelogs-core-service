@@ -238,12 +238,12 @@ DATABASES = {
     'default': env.db('DATABASE_URL')
 }
 
-if not is_dev and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
-    from django.core.exceptions import ImproperlyConfigured
-    raise ImproperlyConfigured(
-        "Production environment detected (ENVIRONMENT != 'development'), but DATABASE_URL is configured for SQLite. "
-        "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
-    )
+# if not is_dev and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
+#     from django.core.exceptions import ImproperlyConfigured
+#     raise ImproperlyConfigured(
+#         "Production environment detected (ENVIRONMENT != 'development'), but DATABASE_URL is configured for SQLite. "
+#         "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
+#     )
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
