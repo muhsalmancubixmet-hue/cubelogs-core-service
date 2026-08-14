@@ -313,10 +313,10 @@ REST_FRAMEWORK = {
 }
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_SAMESITE = None
 SESSION_COOKIE_SECURE = not is_dev   # True in production (HTTPS only)
 CSRF_COOKIE_HTTPONLY = False          # Must stay False — JS needs to read the CSRF token
-CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = None
 CSRF_COOKIE_SECURE = not is_dev       # True in production (HTTPS only)
 
 
