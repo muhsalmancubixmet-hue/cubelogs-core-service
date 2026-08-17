@@ -275,19 +275,12 @@ AUTH_PASSWORD_VALIDATORS = [
 #       REST Framework
 # ------------------------------------------------------------------------------
 # Configures Django REST Framework globally (authentication/permissions).
-# ------------------------------------------------------------------------------
-SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=env("ACCESS_TOKEN_LIFETIME",cast=int)),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=env("REFRESH_TOKEN_LIFETIME",cast=int)),
-    'ROTATE_REFRESH_TOKENS': env("ROTATE_REFRESH_TOKENS",cast=bool),
-    'BLACKLIST_AFTER_ROTATION': env("BLACKLIST_AFTER_ROTATION",cast=bool)
-}
-
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_RENDERER_CLASSES": [

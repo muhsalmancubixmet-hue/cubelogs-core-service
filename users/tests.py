@@ -7,56 +7,48 @@ from core.models import Organization, OrgSettings
 from users.models import Employee
 
 
-@override_settings(
-    REST_FRAMEWORK={
-        'DEFAULT_AUTHENTICATION_CLASSES': [
-            'rest_framework.authentication.SessionAuthentication',
-        ],
-        'DEFAULT_PERMISSION_CLASSES': [
-            'rest_framework.permissions.IsAuthenticated',
-        ],
-        'DEFAULT_THROTTLE_CLASSES': [],
-        'DEFAULT_THROTTLE_RATES': {},
-    }
-)
-class SessionAuthLifecycleTestCase(TestCase):
+class JWTAuthLifecycleTestCase(TestCase):
     def setUp(self):
         self.org_settings = OrgSettings.objects.create(
             is_attendance_enabled=True,
             is_project_enabled=False,
         )
         self.org = Organization.objects.create(
-            name="Session Auth Test Org",
-            subdomain="session_test",
+            name="JWT Auth Test Org",
+            subdomain="jwt_test",
             settings=self.org_settings,
         )
         self.user = Employee.objects.create_user(  # type: ignore[call-arg]
-            email="session_user@example.com",
+            email="jwt_user@example.com",
             password="securepassword123",
-            first_name="Session",
+            first_name="JWT",
             last_name="User",
             organization=self.org,
             permissions=["projects:create", "projects:view", "dashboard"]
         )
 
-    def test_password_login_creates_session(self):
+    def test_password_login_returns_jwt_tokens(self):
         client = APIClient()
         response = client.post("/api/auth/login/", {
-            "email": "session_user@example.com",
+            "email": "jwt_user@example.com",
             "password": "securepassword123"
         }, format="json")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("user", response.data)
-        self.assertEqual(response.data["user"]["email"], "session_user@example.com")
-        self.assertIn("sessionid", response.cookies)
+        self.assertEqual(response.data["user"]["email"], "jwt_user@example.com")
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+        self.assertTrue(len(response.data["access"]) > 20)
+        self.assertTrue(len(response.data["refresh"]) > 20)
 
-        # Confirm session is valid for subsequent requests
+        # Confirm Bearer token authenticates subsequent requests
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
         me_res = client.get("/api/auth/me/")
         self.assertEqual(me_res.status_code, status.HTTP_200_OK)
-        self.assertEqual(me_res.json()["email"], "session_user@example.com")
+        self.assertEqual(me_res.json()["email"], "jwt_user@example.com")
 
-    def test_magic_login_creates_session(self):
+    def test_magic_login_returns_jwt_tokens(self):
         signer = TimestampSigner(salt="auto-login")
         token = signer.sign(str(self.user.id))
 
@@ -65,9 +57,12 @@ class SessionAuthLifecycleTestCase(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("user", response.data)
-        self.assertEqual(response.data["user"]["email"], "session_user@example.com")
-        self.assertIn("sessionid", response.cookies)
+        self.assertEqual(response.data["user"]["email"], "jwt_user@example.com")
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
 
+        # Confirm Bearer token authenticates
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
         me_res = client.get("/api/auth/me/")
         self.assertEqual(me_res.status_code, status.HTTP_200_OK)
 
@@ -77,28 +72,96 @@ class SessionAuthLifecycleTestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("error", response.data)
 
-    def test_logout_flushes_session(self):
+    def test_token_refresh_lifecycle(self):
         client = APIClient()
-        client.post("/api/auth/login/", {
-            "email": "session_user@example.com",
+        login_res = client.post("/api/auth/login/", {
+            "email": "jwt_user@example.com",
             "password": "securepassword123"
         }, format="json")
+        refresh_token = login_res.data["refresh"]
 
-        # Verify authenticated
-        me_before = client.get("/api/auth/me/")
-        self.assertEqual(me_before.status_code, status.HTTP_200_OK)
+        # Call refresh endpoint
+        refresh_res = client.post("/api/auth/refresh/", {
+            "refresh": refresh_token
+        }, format="json")
 
-        # Call logout
-        logout_res = client.post("/api/auth/logout/", format="json")
+        self.assertEqual(refresh_res.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refresh_res.data)
+        new_access = refresh_res.data["access"]
+
+        # Use refreshed access token
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {new_access}")
+        me_res = client.get("/api/auth/me/")
+        self.assertEqual(me_res.status_code, status.HTTP_200_OK)
+
+    def test_logout_blacklists_refresh_token(self):
+        client = APIClient()
+        login_res = client.post("/api/auth/login/", {
+            "email": "jwt_user@example.com",
+            "password": "securepassword123"
+        }, format="json")
+        refresh_token = login_res.data["refresh"]
+
+        # Logout with refresh token
+        logout_res = client.post("/api/auth/logout/", {
+            "refresh": refresh_token
+        }, format="json")
         self.assertEqual(logout_res.status_code, status.HTTP_200_OK)
 
-        # Verify session is invalidated
-        me_after = client.get("/api/auth/me/")
-        self.assertIn(me_after.status_code, [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN])
+        # Attempt to refresh with blacklisted token should fail
+        refresh_attempt = client.post("/api/auth/refresh/", {
+            "refresh": refresh_token
+        }, format="json")
+        self.assertEqual(refresh_attempt.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_unauthenticated_me_returns_401(self):
+        client = APIClient()
+        response = client.get("/api/auth/me/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_token_refresh_rotation_and_old_token_rejected(self):
+        client = APIClient()
+        login_res = client.post("/api/auth/login/", {
+            "email": "jwt_user@example.com",
+            "password": "securepassword123"
+        }, format="json")
+        first_refresh = login_res.data["refresh"]
+
+        # First refresh -> returns new access and rotated refresh
+        refresh_res = client.post("/api/auth/refresh/", {
+            "refresh": first_refresh
+        }, format="json")
+        self.assertEqual(refresh_res.status_code, status.HTTP_200_OK)
+        self.assertIn("access", refresh_res.data)
+        self.assertIn("refresh", refresh_res.data)
+        second_refresh = refresh_res.data["refresh"]
+
+        # Reusing the old rotated refresh token MUST be rejected with 401
+        replay_res = client.post("/api/auth/refresh/", {
+            "refresh": first_refresh
+        }, format="json")
+        self.assertEqual(replay_res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        # The new rotated refresh token should work
+        valid_res = client.post("/api/auth/refresh/", {
+            "refresh": second_refresh
+        }, format="json")
+        self.assertEqual(valid_res.status_code, status.HTTP_200_OK)
+
+    def test_invalid_or_expired_refresh_token_returns_401(self):
+        client = APIClient()
+        response = client.post("/api/auth/refresh/", {
+            "refresh": "invalid.or.expired.jwt.token"
+        }, format="json")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_me_endpoint_includes_enrichment_data(self):
         client = APIClient()
-        client.force_login(self.user)
+        login_res = client.post("/api/auth/login/", {
+            "email": "jwt_user@example.com",
+            "password": "securepassword123"
+        }, format="json")
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {login_res.data['access']}")
 
         response = client.get("/api/auth/me/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -108,4 +171,5 @@ class SessionAuthLifecycleTestCase(TestCase):
         self.assertTrue(data["is_attendance_enabled"])
         self.assertFalse(data["is_project_enabled"])
         self.assertIn("subscription", data)
+
 

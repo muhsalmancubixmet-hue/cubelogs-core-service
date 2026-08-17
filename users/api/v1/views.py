@@ -5,6 +5,9 @@
 # STANDARD LIBRARY
 from datetime import datetime
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # DJANGO
 from django.contrib.auth import authenticate, login, logout
@@ -17,7 +20,8 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters.rest_framework import DjangoFilterBackend
 
 # APPLICATION SPECIFIC
@@ -185,20 +189,26 @@ class CustomTokenObtainPairView(APIView):
     def post(self, request, *args, **kwargs):
         email = request.data.get('email')
         password = request.data.get('password')
+
         if not email or not password:
-            return Response({'error': 'Email and password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': 'Email and password are required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         user = authenticate(request, username=email, password=password)
-        if not user or not user.is_active:
-            return Response({'error': 'Invalid email or security password.'}, status=status.HTTP_401_UNAUTHORIZED)
 
-        login(request, user)
-        from django.middleware.csrf import get_token
-        get_token(request)
+        if not user or not user.is_active:
+            return Response(
+                {'error': 'Invalid email or security password.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         serializer = EmployeeSerializer(user)
         user_data = serializer.data
         user_data = _enrich_user_data(user_data, user.organization)
+
+        refresh = RefreshToken.for_user(user)
 
         AuditLog.objects.create(
             employee=user,
@@ -209,8 +219,8 @@ class CustomTokenObtainPairView(APIView):
 
         return Response({
             'user': user_data,
-            'access': 'session',
-            'refresh': 'session',
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
         }, status=status.HTTP_200_OK)
 
 
@@ -221,8 +231,6 @@ class CurrentUserView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        from django.middleware.csrf import get_token
-        get_token(request)
         serializer = EmployeeSerializer(request.user)
         user_data = dict(serializer.data)
         # Enrich with subscription, feature flags, and permission gates
@@ -251,11 +259,11 @@ class MagicLoginView(APIView):
             if not employee.is_active:
                 return Response({'error': 'User account is inactive'}, status=status.HTTP_400_BAD_REQUEST)
 
-            login(request, employee)
-
             serializer = EmployeeSerializer(employee)
             user_data = serializer.data
             user_data = _enrich_user_data(user_data, employee.organization)
+
+            refresh = RefreshToken.for_user(employee)
 
             AuditLog.objects.create(
                 employee=employee,
@@ -266,19 +274,26 @@ class MagicLoginView(APIView):
 
             return Response({
                 'user': user_data,
-                'access': 'session',
-                'refresh': 'session',
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
             }, status=status.HTTP_200_OK)
-        except (BadSignature, SignatureExpired, Employee.DoesNotExist):
-            return Response({'error': 'Invalid or expired magic link token'}, status=status.HTTP_400_BAD_REQUEST)
-
         except SignatureExpired:
-            return Response({'error': 'Magic link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
-        except BadSignature:
-            return Response({'error': 'Invalid magic link.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {'error': 'Magic link has expired.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
+        except BadSignature:
+            return Response(
+                {'error': 'Invalid magic link.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        except Employee.DoesNotExist:
+            return Response(
+                {'error': 'Account not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
 # --------------------------------------------------------------------------------
 # PasswordResetRequestView: API endpoint to generate and send a password reset code/email.
@@ -825,29 +840,28 @@ def backoffice_logout_view(request):
     return redirect('/backoffice/login/')
 
 
-class CustomTokenRefreshView(APIView):
-    permission_classes = [permissions.AllowAny]
+class CustomTokenRefreshView(TokenRefreshView):
+    serializer_class = CustomTokenRefreshSerializer
     throttle_classes = [AuthRateThrottle]
-
-    def post(self, request, *args, **kwargs):
-        return Response({
-            'message': 'Token refresh is deprecated. Session authentication is active.'
-        }, status=status.HTTP_200_OK)
 
 
 class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        logout(request)
+        refresh_token = request.data.get('refresh')
 
-        response = Response({'message': 'Logged out successfully'}, status=status.HTTP_200_OK)
-        samesite = 'Lax'
-        response.delete_cookie('sessionid', samesite=samesite)
-        response.delete_cookie('csrftoken', samesite=samesite)
-        response.delete_cookie('cubelogs_access_token', samesite=samesite)
-        response.delete_cookie('cubelogs_refresh_token', samesite=samesite)
-        return response
+        if refresh_token:
+            try:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+            except Exception as e:
+                logger.debug("Logout token blacklist skipped or failed: %s", str(e))
+
+        return Response(
+            {'message': 'Logged out successfully'},
+            status=status.HTTP_200_OK
+        )
 
 
 def backoffice_manifest_view(request):
