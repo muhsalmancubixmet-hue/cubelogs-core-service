@@ -436,10 +436,9 @@ class ProjectComment(models.Model):
         return f"Comment by {self.user.email} at {self.created_at}"
 
 
-from django.core.files.storage import FileSystemStorage
-from django.conf import settings
+from projects.storage import PrivateMediaStorage
 
-private_storage = FileSystemStorage(location=settings.PRIVATE_MEDIA_ROOT)
+private_storage = PrivateMediaStorage()
 
 
 # --------------------------------------------------------------------------------
