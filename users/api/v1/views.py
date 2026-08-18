@@ -28,7 +28,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from users.models import Employee
 from core.models import AuditLog
 from core.mixins import FilterMixinNew
-from core.permissions import ActionPermissionMixin, DRFCheckModePermission, HasRequiredPermission
+from core.permissions import ActionPermissionMixin, DRFCheckModePermission, HasRequiredPermission, IsSuperAdminUser
 from users.filters import EmployeeFilter
 from users.api.v1.serializers import EmployeeSerializer, RoleSerializer, PermissionFlagSerializer, CustomTokenRefreshSerializer
 from core.module_registry.loader import load_modules
@@ -63,8 +63,15 @@ class PermissionFlagViewSet(viewsets.ReadOnlyModelViewSet):
 
 class RoleViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
-    required_permission = 'roles.view'
+    required_permission: list[str] | str | None = 'roles.view'
     serializer_class = RoleSerializer
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve']:
+            self.required_permission = None
+        else:
+            self.required_permission = ['roles.edit', 'roles.create', 'admin:templates']
+        return super().get_permissions()
 
     def get_queryset(self):
         from users.roles import sync_default_roles
@@ -94,11 +101,12 @@ class RoleViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer):
-        role = serializer.save()
         user = self.request.user
+        org = user.organization if (user.is_authenticated and hasattr(user, 'organization')) else None
+        role = serializer.save(organization=org)
         AuditLog.objects.create(
-            employee=user,
-            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            employee=user if user.is_authenticated else None,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or (user.email if user.is_authenticated else "System"),
             action='ROLE_CREATED',
             details=f"Created custom role '{role.name}' ({role.slug}).",
             ipAddress=self.request.META.get('REMOTE_ADDR')
@@ -473,17 +481,18 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
     serializer_class = EmployeeSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_class = EmployeeFilter
+    required_permission: list[str] | str | None = None
 
     permission_classes_by_action = {
         'list': [permissions.IsAuthenticated, DRFCheckModePermission],
         'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission],
         'revoke': [permissions.AllowAny],
-        'create': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
-        'update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
-        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
-        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
-        'change_status': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
-        'bulk_upload': [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, IsSuperAdminUser],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, IsSuperAdminUser],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, IsSuperAdminUser],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, IsSuperAdminUser],
+        'change_status': [permissions.IsAuthenticated, DRFCheckModePermission, IsSuperAdminUser],
+        'bulk_upload': [permissions.IsAuthenticated, DRFCheckModePermission, IsSuperAdminUser],
     }
 
     def get_queryset(self):
