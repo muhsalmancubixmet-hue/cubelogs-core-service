@@ -68,8 +68,10 @@ class RoleSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         permission_keys = validated_data.pop('permission_keys', None)
+        if permission_keys is None:
+            permission_keys = self.initial_data.get('permissions') or self.initial_data.get('permission_keys')
         request = self.context.get('request')
-        if request and request.user and request.user.organization:
+        if request and request.user and getattr(request.user, 'organization', None):
             validated_data['organization'] = request.user.organization
 
         name = validated_data.get('name', '')
@@ -85,6 +87,8 @@ class RoleSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         permission_keys = validated_data.pop('permission_keys', None)
+        if permission_keys is None and ('permissions' in self.initial_data or 'permission_keys' in self.initial_data):
+            permission_keys = self.initial_data.get('permissions') or self.initial_data.get('permission_keys')
         if instance.is_system_role:
             # System roles cannot be renamed or change slug
             validated_data.pop('name', None)
@@ -109,6 +113,36 @@ class EmployeeSerializer(serializers.ModelSerializer):
             if Employee.objects.filter(email=value).exists():
                 raise serializers.ValidationError("An employee with this email already exists.")
         return value
+
+    def validate(self, attrs):
+        # Strict tenant validation for Role
+        role_input = self.initial_data.get('role')
+        if role_input is not None and role_input != '':
+            from users.models import Role
+            request_user = self.context.get('request').user if (self.context.get('request') and self.context.get('request').user) else None
+            org = attrs.get('organization') or (self.instance.organization if self.instance else None) or (getattr(request_user, 'organization', None) if request_user else None)
+
+            role_obj = None
+            if isinstance(role_input, Role):
+                role_obj = role_input
+            elif isinstance(role_input, int) or (isinstance(role_input, str) and str(role_input).isdigit()):
+                role_obj = Role.objects.filter(id=int(role_input), is_active=True).first()
+            elif isinstance(role_input, str):
+                role_obj = Role.objects.filter(name=role_input, is_active=True).first()
+
+            if not role_obj:
+                raise serializers.ValidationError({"role": "Invalid role for this organization."})
+
+            # Check organization ownership: must belong to same org or be active system role
+            is_same_org = (org is not None and role_obj.organization_id == getattr(org, 'id', org))
+            is_valid_system = (role_obj.organization is None and role_obj.is_system_role)
+            if not (is_same_org or is_valid_system):
+                raise serializers.ValidationError({"role": "Invalid role for this organization."})
+
+            attrs['role'] = role_obj
+            attrs['role_name'] = role_obj.name
+
+        return super().validate(attrs)
 
     class Meta:
         model = Employee
@@ -307,23 +341,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             employee._raw_password = raw_password
             employee.save()
 
-        # Resolve relational Role FK
-        role_input = self.initial_data.get('role')
-        if role_input:
-            from django.utils.text import slugify
-            from users.models import Role
-            role_obj = None
-            if isinstance(role_input, Role):
-                role_obj = role_input
-            elif isinstance(role_input, int) or (isinstance(role_input, str) and role_input.isdigit()):
-                role_obj = Role.objects.filter(id=int(role_input)).first()
-            elif isinstance(role_input, str):
-                role_obj = Role.objects.filter(slug=slugify(role_input)).first() or Role.objects.filter(name=role_input).first()
-            
-            if role_obj:
-                employee.role = role_obj
-                employee.role_name = role_obj.name
-                employee.save(update_fields=['role', 'role_name'])
+        if employee.role:
+            employee.role_name = employee.role.name
+            employee.save(update_fields=['role_name'])
 
         # Send admin onboarding email via service
         try:
@@ -350,22 +370,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validated_data['last_name'] = parts[1] if len(parts) > 1 else ''
         employee = super().update(instance, validated_data)
 
-        role_input = self.initial_data.get('role')
-        if role_input:
-            from django.utils.text import slugify
-            from users.models import Role
-            role_obj = None
-            if isinstance(role_input, Role):
-                role_obj = role_input
-            elif isinstance(role_input, int) or (isinstance(role_input, str) and role_input.isdigit()):
-                role_obj = Role.objects.filter(id=int(role_input)).first()
-            elif isinstance(role_input, str):
-                role_obj = Role.objects.filter(slug=slugify(role_input)).first() or Role.objects.filter(name=role_input).first()
-
-            if role_obj:
-                employee.role = role_obj
-                employee.role_name = role_obj.name
-                employee.save(update_fields=['role', 'role_name'])
+        if employee.role:
+            employee.role_name = employee.role.name
+            employee.save(update_fields=['role_name'])
 
         if password:
             employee.set_password(password)
