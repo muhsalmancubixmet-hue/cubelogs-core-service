@@ -1813,12 +1813,12 @@ class EmployeeAssignmentsAPIView(APIView):
         except Employee.DoesNotExist:
             return Response({'detail': 'Employee not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        pm_projects = Project.objects.filter(company=org, project_manager=target_employee)
-        tl_projects = Project.objects.filter(company=org, team_lead=target_employee)
-        member_projects = Project.objects.filter(company=org, members__user=target_employee, members__is_active=True)
+        pm_projects = Project.objects.filter(company=org, project_manager=target_employee, is_deleted=False)
+        tl_projects = Project.objects.filter(company=org, team_lead=target_employee, is_deleted=False)
+        member_projects = Project.objects.filter(company=org, members__user=target_employee, members__is_active=True, is_deleted=False)
 
         all_projects = (pm_projects | tl_projects | member_projects).distinct()
-        assigned_tasks = ProjectTask.objects.filter(assigned_to=target_employee, story__project__company=org)
+        assigned_tasks = ProjectTask.objects.filter(assigned_to=target_employee, story__project__company=org, story__project__is_deleted=False, is_deleted=False)
 
         return Response({
             'employee_id': target_employee.id,

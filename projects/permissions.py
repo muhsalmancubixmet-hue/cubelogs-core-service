@@ -5,6 +5,7 @@
 # STANDARD LIBRARY
 
 # DJANGO
+from django.http import Http404
 
 # THIRD PARTY
 from rest_framework import permissions
@@ -213,7 +214,6 @@ class HasProjectPermission(permissions.BasePermission):
         # 1. Detail view check (kwargs pk)
         if 'pk' in view.kwargs:
             try:
-                from django.http import Http404
                 model = view.get_queryset().model
                 obj = model.objects.filter(pk=view.kwargs['pk']).first()
                 if obj:
@@ -248,14 +248,14 @@ class HasProjectPermission(permissions.BasePermission):
             project_id = request.query_params.get('project_id') or request.query_params.get('project')
             if project_id:
                 from projects.models import Project
-                project = Project.objects.filter(id=project_id, company=user.organization).first()
+                project = Project.objects.filter(id=project_id, company=user.organization, is_deleted=False).first()
 
         # 3. Request body check
         if not project and request.data:
             project_id = request.data.get('project') or request.data.get('project_id')
             if project_id:
                 from projects.models import Project
-                project = Project.objects.filter(id=project_id, company=user.organization).first()
+                project = Project.objects.filter(id=project_id, company=user.organization, is_deleted=False).first()
 
         # 4. Fallback for nested objects in data
         if not project and request.data:

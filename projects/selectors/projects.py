@@ -26,7 +26,7 @@ def projects_for_user(user):
     if not (user and user.is_authenticated and user.organization):
         return Project.objects.none()
 
-    company_projects = Project.objects.filter(company=user.organization)
+    company_projects = Project.objects.filter(company=user.organization, is_deleted=False)
 
     if user.is_superuser or getattr(user, 'isSuperAdmin', False) or has_fine_grained_permission(user, 'projects:update'):
         return company_projects
