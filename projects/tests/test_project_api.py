@@ -183,3 +183,42 @@ class ProjectAPIPermissionTestCase(TestCase):
         self.assertEqual(len(data['recent_activity']), 0)
         self.assertEqual(len(data['my_recent_tasks']), 0)
 
+    def test_delete_project_soft_deletes_and_excludes_from_list_and_detail(self):
+        """Deleting a project marks is_deleted=True, excludes it from list, returns 404 on detail/actions."""
+        api_client = APIClient()
+        api_client.force_authenticate(user=self.project_manager_salman)
+
+        project_id = self.project_attendance.id
+
+        # 1. Ensure project exists and is in list
+        list_before = api_client.get("/api/v1/projects/")
+        self.assertEqual(list_before.status_code, status.HTTP_200_OK)
+        results_before = list_before.data['results'] if 'results' in list_before.data else list_before.data
+        self.assertIn(project_id, [p['id'] for p in results_before])
+
+        # 2. DELETE project
+        delete_resp = api_client.delete(f"/api/v1/projects/{project_id}/")
+        self.assertEqual(delete_resp.status_code, status.HTTP_204_NO_CONTENT)
+
+        # 3. Verify in database: is_deleted is True (soft delete)
+        self.project_attendance.refresh_from_db()
+        self.assertTrue(self.project_attendance.is_deleted)
+
+        # 4. Verify project list excludes soft-deleted project
+        list_after = api_client.get("/api/v1/projects/")
+        self.assertEqual(list_after.status_code, status.HTTP_200_OK)
+        results_after = list_after.data['results'] if 'results' in list_after.data else list_after.data
+        self.assertNotIn(project_id, [p['id'] for p in results_after])
+
+        # 5. Verify GET detail returns 404
+        detail_resp = api_client.get(f"/api/v1/projects/{project_id}/")
+        self.assertEqual(detail_resp.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 6. Verify PATCH / update returns 404
+        patch_resp = api_client.patch(f"/api/v1/projects/{project_id}/", {"name": "Renamed"}, format="json")
+        self.assertEqual(patch_resp.status_code, status.HTTP_404_NOT_FOUND)
+
+        # 7. Verify action endpoint (members) returns 404
+        members_resp = api_client.get(f"/api/v1/projects/{project_id}/members/")
+        self.assertEqual(members_resp.status_code, status.HTTP_404_NOT_FOUND)
+
