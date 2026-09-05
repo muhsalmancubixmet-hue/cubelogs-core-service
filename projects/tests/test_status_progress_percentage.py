@@ -102,3 +102,21 @@ class StatusProgressPercentageTests(APITestCase):
         )
         self.assertNotEqual(qa.category, "completed")
         self.assertEqual(qa.progress_percentage, 80)
+
+    def test_auto_derive_category_from_progress_percentage(self):
+        url = "/api/v1/project-statuses/"
+
+        # 0% -> pending
+        res0 = self.client.post(url, {"name": "Blocked 0", "code": "blocked_0", "progress_percentage": 0})
+        self.assertEqual(res0.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res0.data["category"], "pending")
+
+        # 50% -> active
+        res50 = self.client.post(url, {"name": "Working 50", "code": "working_50", "progress_percentage": 50})
+        self.assertEqual(res50.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res50.data["category"], "active")
+
+        # 100% -> completed
+        res100 = self.client.post(url, {"name": "Done 100", "code": "done_100", "progress_percentage": 100})
+        self.assertEqual(res100.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res100.data["category"], "completed")

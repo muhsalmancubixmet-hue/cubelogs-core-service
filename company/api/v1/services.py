@@ -27,85 +27,278 @@ logger = logging.getLogger(__name__)
 
 class BillingService:
     @staticmethod
+    def get_billable_memberships_qs(org):
+        from users.models import OrganizationMembership
+        from django.db.models import Q
+        today = timezone.now().date()
+        status_condition = Q(employment_status='Active') | (
+            Q(employment_status__in=['Resigned', 'Terminated']) & Q(last_working_date__gt=today)
+        )
+        return OrganizationMembership.objects.filter(
+            organization=org,
+            is_deleted=False,
+            is_active_in_org=True,
+            user__is_active=True,
+            user__isSuperAdmin=False
+        ).filter(status_condition)
+
+    @staticmethod
+    def get_billing_recipient_email(org):
+        if not org:
+            return None
+        if hasattr(org, 'settings') and org.settings and org.settings.billing_email:
+            email = org.settings.billing_email.strip()
+            if email:
+                return email
+
+        from users.models import OrganizationMembership
+        from django.db.models import Q
+        admin_mem = OrganizationMembership.objects.filter(
+            organization=org,
+            is_deleted=False,
+            is_active_in_org=True,
+            user__is_active=True
+        ).filter(
+            Q(user__isSuperAdmin=True) |
+            Q(role__slug__in=['company-admin', 'super-admin', 'admin']) |
+            Q(designation__icontains='Admin')
+        ).select_related('user').first()
+
+        if admin_mem and admin_mem.user and admin_mem.user.email:
+            return admin_mem.user.email
+
+        fallback_mem = OrganizationMembership.objects.filter(
+            organization=org,
+            is_deleted=False,
+            is_active_in_org=True,
+            user__is_active=True
+        ).select_related('user').first()
+        if fallback_mem and fallback_mem.user and fallback_mem.user.email:
+            return fallback_mem.user.email
+
+        return None
+
+    @staticmethod
     def process_outstanding_dues(wallet):
         if getattr(wallet, '_processing_dues', False):
             return
-        
+
+        from django.db import transaction
+
+        emails_to_send = []
         try:
             wallet._processing_dues = True
-            
-            unpaid_invoices = list(
-                MonthlyInvoice.objects.filter(
-                    organization=wallet.organization, is_paid=False
-                ).order_by('billing_month')
-            )
-            total_due = sum((inv.amount for inv in unpaid_invoices), Decimal('0'))
 
-            if total_due > 0 and wallet.balance >= total_due:
-                # Update wallet balance directly
-                wallet.balance = wallet.balance - total_due
-                # Direct save to prevent infinite cycles
-                super(wallet.__class__, wallet).save(update_fields=['balance'])
+            with transaction.atomic():
+                # Acquire row-level lock on wallet for financial safety
+                locked_wallet = Wallet.objects.select_for_update().get(id=wallet.id)
 
-                for inv in unpaid_invoices:
-                    inv.is_paid = True
-                    inv.paid_at = timezone.now()
-                    inv.save()
-
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=total_due,
-                    transactionType='Debit',
-                    success=True,
-                    status='Success',
-                    details="Automated wallet deduction: Outstanding dues cleared on top-up.",
+                unpaid_invoices = list(
+                    MonthlyInvoice.objects.filter(
+                        organization=locked_wallet.organization, is_paid=False
+                    ).order_by('billing_month', 'id')
                 )
 
-                was_inactive = False
-                if wallet.organization and wallet.organization.settings:
-                    settings_obj = wallet.organization.settings
-                    was_inactive = settings_obj.subscriptionStatus in ['Unpaid', 'Suspended', 'Restricted']
-                    settings_obj.subscriptionStatus = 'Active'
-                    # Extend validity when reactivated (in production standard logic is 30 days)
-                    settings_obj.subscriptionDays = 30
-                    if settings_obj.subscriptionExpiresAt:
-                        # Extend subscription validity by 30 days if not expired, or set to 30 days from now
-                        if settings_obj.subscriptionExpiresAt > timezone.now():
-                            settings_obj.subscriptionExpiresAt = settings_obj.subscriptionExpiresAt + timezone.timedelta(days=30)
-                        else:
-                            settings_obj.subscriptionExpiresAt = timezone.now() + timezone.timedelta(days=30)
-                    else:
-                        settings_obj.subscriptionExpiresAt = timezone.now() + timezone.timedelta(days=30)
-                    settings_obj.save()
+                if not unpaid_invoices:
+                    return
 
-                superadmin = Employee.objects.filter(
-                    organization=wallet.organization, isSuperAdmin=True
-                ).first()
-                if superadmin:
-                    if was_inactive:
-                        subject = f"Workspace Reactivated: CubeLogs"
-                        message = (
-                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
-                            f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully paid, and your workspace {wallet.organization.name} has been reactivated.\n"
-                            f"All premium modules are now unlocked. All previous employees, attendance sheets, tasks, settings, and workspace data remain fully available exactly as before.\n\n"
-                            f"Updated Wallet Balance: ₹{wallet.balance} INR.\n\n"
-                            f"CubeLogs Billing Team"
-                        )
+                total_settled_amount = Decimal('0.00')
+                settled_invoices = []
+
+                # Oldest complete invoice first: pay invoices sequentially as long as wallet balance covers full amount
+                current_bal = locked_wallet.balance
+                for inv in unpaid_invoices:
+                    if current_bal >= inv.amount:
+                        current_bal -= inv.amount
+                        total_settled_amount += inv.amount
+                        inv.is_paid = True
+                        inv.paid_at = timezone.now()
+                        inv.save()
+                        settled_invoices.append(inv)
                     else:
-                        subject = f"Notice: Dues Paid & Workspace Activated for {wallet.organization.name}"
-                        message = (
-                            f"Hi {superadmin.first_name or 'Superadmin'},\n\n"
-                            f"Thank you! Your outstanding dues of ₹{total_due} INR have been successfully paid after your recent top-up.\n"
-                            f"Your workspace is active.\n"
-                            f"Updated Wallet Balance: ₹{wallet.balance} INR.\n\n"
-                            f"CubeLogs Billing Team"
+                        # Cannot pay complete invoice -> DO NOT partially debit
+                        break
+
+                if total_settled_amount > 0:
+                    locked_wallet.balance = current_bal
+                    super(locked_wallet.__class__, locked_wallet).save(update_fields=['balance'])
+
+                    first_inv = settled_invoices[0] if settled_invoices else None
+                    inv_labels = ", ".join([inv.billing_month.strftime('%B %Y') for inv in settled_invoices])
+                    inv_url = f"/api/monthly-invoices/{first_inv.id}/pdf/" if first_inv else None
+                    WalletTransaction.objects.create(
+                        wallet=locked_wallet,
+                        amount=total_settled_amount,
+                        transactionType='Debit',
+                        success=True,
+                        status='Success',
+                        invoice_url=inv_url,
+                        details=f"Automated wallet deduction: Settled invoice(s) for {inv_labels}.",
+                    )
+
+                    # Check if ALL unpaid invoices are cleared for this organization
+                    remaining_unpaid_exists = MonthlyInvoice.objects.filter(
+                        organization=locked_wallet.organization, is_paid=False
+                    ).exists()
+
+                    recipient_email = BillingService.get_billing_recipient_email(locked_wallet.organization)
+
+                    if not remaining_unpaid_exists:
+                        was_inactive = False
+                        if locked_wallet.organization and locked_wallet.organization.settings:
+                            settings_obj = locked_wallet.organization.settings
+                            was_inactive = settings_obj.subscriptionStatus in ['Unpaid', 'Suspended', 'Restricted', 'Pending Payment']
+                            settings_obj.subscriptionStatus = 'Active'
+                            settings_obj.subscriptionDays = 30
+                            if settings_obj.subscriptionExpiresAt:
+                                if settings_obj.subscriptionExpiresAt > timezone.now():
+                                    settings_obj.subscriptionExpiresAt = settings_obj.subscriptionExpiresAt + timezone.timedelta(days=30)
+                                else:
+                                    settings_obj.subscriptionExpiresAt = timezone.now() + timezone.timedelta(days=30)
+                            else:
+                                settings_obj.subscriptionExpiresAt = timezone.now() + timezone.timedelta(days=30)
+                            settings_obj.save()
+
+                        if recipient_email:
+                            already_reactivated_sent = any(getattr(inv, 'reactivation_email_sent', False) for inv in settled_invoices)
+                            if not already_reactivated_sent:
+                                for inv in settled_invoices:
+                                    inv.reactivation_email_sent = True
+                                    inv.save(update_fields=['reactivation_email_sent'])
+
+                                if was_inactive:
+                                    subject = f"Workspace Reactivated: CubeLogs"
+                                    message = (
+                                        f"Hi,\n\n"
+                                        f"Thank you! Your outstanding dues of ₹{total_settled_amount} INR have been successfully paid, and your workspace {locked_wallet.organization.name} has been reactivated.\n"
+                                        f"All premium modules are now unlocked. All previous employees, attendance sheets, tasks, settings, and workspace data remain fully available.\n\n"
+                                        f"Updated Wallet Balance: ₹{locked_wallet.balance} INR.\n\n"
+                                        f"CubeLogs Billing Team"
+                                    )
+                                else:
+                                    subject = f"Notice: Dues Paid & Workspace Activated for {locked_wallet.organization.name}"
+                                    message = (
+                                        f"Hi,\n\n"
+                                        f"Thank you! Your outstanding dues of ₹{total_settled_amount} INR have been successfully paid.\n"
+                                        f"Your workspace is active.\n"
+                                        f"Updated Wallet Balance: ₹{locked_wallet.balance} INR.\n\n"
+                                        f"CubeLogs Billing Team"
+                                    )
+                                emails_to_send.append((recipient_email, subject, message))
+
+                    # Queue email execution AFTER transaction commit
+                    if emails_to_send:
+                        transaction.on_commit(
+                            lambda: [EmailService.queue_and_send_email(rec, subj, msg) for rec, subj, msg in emails_to_send]
                         )
-                    try:
-                        EmailService.queue_and_send_email(superadmin.email, subject, message)
-                    except Exception:
-                        pass
         finally:
             wallet._processing_dues = False
+
+    @staticmethod
+    def credit_wallet_from_payment(
+        wallet_id, amount_dec, session_id=None, details=None,
+        bonus_amount_dec=Decimal('0.00'), coupon_code=None, event_id=None,
+        target_org_id=None, razorpay_order_id=None, razorpay_payment_id=None,
+        razorpay_signature=None, gateway_event_id=None
+    ):
+        """
+        Durable, atomic, and idempotent wallet credit service.
+        Supports Razorpay order/payment IDs while preserving legacy Stripe idempotency fallback.
+        """
+        from subscribers.models import Wallet, WalletTransaction
+        from django.db import transaction
+        from django.db.models import Q
+
+        total_credit = amount_dec + bonus_amount_dec
+
+        with transaction.atomic():
+            # 1. Lock the target wallet immediately to serialize concurrent operations
+            locked_wallet = Wallet.objects.select_for_update().filter(id=wallet_id).first()
+            if not locked_wallet:
+                raise ValueError(f"Wallet with ID {wallet_id} not found.")
+
+            # 2. Lock any existing/pending transaction row matching the external identifiers
+            tx_obj = None
+            if razorpay_order_id:
+                tx_obj = WalletTransaction.objects.select_for_update().filter(razorpay_order_id=razorpay_order_id).first()
+            if not tx_obj and razorpay_payment_id:
+                tx_obj = WalletTransaction.objects.select_for_update().filter(razorpay_payment_id=razorpay_payment_id).first()
+            if not tx_obj and session_id:
+                tx_obj = WalletTransaction.objects.select_for_update().filter(stripe_session_id=session_id).first()
+
+            # 3. Inside the lock, check if payment was already successfully processed
+            if tx_obj and tx_obj.success:
+                return locked_wallet, tx_obj, False
+
+            tx_existing = None
+            if razorpay_payment_id:
+                tx_existing = WalletTransaction.objects.filter(
+                    razorpay_payment_id=razorpay_payment_id, success=True
+                ).first()
+            if not tx_existing and razorpay_order_id:
+                tx_existing = WalletTransaction.objects.filter(
+                    razorpay_order_id=razorpay_order_id, success=True
+                ).first()
+            if not tx_existing and gateway_event_id:
+                tx_existing = WalletTransaction.objects.filter(
+                    gateway_event_id=gateway_event_id, success=True
+                ).first()
+            if not tx_existing and session_id:
+                tx_existing = WalletTransaction.objects.filter(
+                    stripe_session_id=session_id, success=True
+                ).first()
+
+            if tx_existing:
+                return tx_existing.wallet, tx_existing, False
+
+            # 4. Enforce tenant isolation against locked wallet
+            if target_org_id and locked_wallet.organization_id and str(locked_wallet.organization_id) != str(target_org_id):
+                raise ValueError("Tenant mismatch: wallet organization does not match payment metadata organization.")
+
+            # 5. Mutate balance inside lock
+            locked_wallet.balance += total_credit
+            super(locked_wallet.__class__, locked_wallet).save(update_fields=['balance'])
+
+            detail_text = details or f"Prepaid wallet top-up of ₹{amount_dec}"
+            if bonus_amount_dec > 0 and coupon_code:
+                detail_text += f" (Bonus ₹{bonus_amount_dec} via code '{coupon_code}')"
+
+            evt_id = gateway_event_id or event_id
+
+            if tx_obj:
+                tx_obj.amount = total_credit
+                tx_obj.success = True
+                tx_obj.status = 'Success'
+                tx_obj.details = detail_text
+                if razorpay_order_id:
+                    tx_obj.razorpay_order_id = razorpay_order_id
+                if razorpay_payment_id:
+                    tx_obj.razorpay_payment_id = razorpay_payment_id
+                if razorpay_signature:
+                    tx_obj.razorpay_signature = razorpay_signature
+                if evt_id:
+                    tx_obj.gateway_event_id = evt_id
+                    tx_obj.stripeEventId = evt_id
+                tx_obj.save()
+            else:
+                tx_obj = WalletTransaction.objects.create(
+                    wallet=locked_wallet,
+                    amount=total_credit,
+                    transactionType='Credit',
+                    success=True,
+                    status='Success',
+                    stripe_session_id=session_id,
+                    stripeEventId=evt_id,
+                    razorpay_order_id=razorpay_order_id,
+                    razorpay_payment_id=razorpay_payment_id,
+                    razorpay_signature=razorpay_signature,
+                    gateway_event_id=evt_id,
+                    details=detail_text
+                )
+
+            BillingService.process_outstanding_dues(locked_wallet)
+
+            return locked_wallet, tx_obj, True
 
     @staticmethod
     def trigger_low_balance_alert(user):

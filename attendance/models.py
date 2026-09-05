@@ -4,7 +4,7 @@
 
 # STANDARD LIBRARY
 
-# DJANGO
+from decimal import Decimal
 from django.db import models
 
 # THIRD PARTY
@@ -38,20 +38,79 @@ class AttendanceLog(BaseModel):
 
     class Meta:
         db_table = 'api_attendancelog'
+        indexes = [
+            models.Index(fields=['employee', 'date', 'is_deleted'], name='att_log_emp_date_del_idx'),
+        ]
 
     def __str__(self):
         return f"{self.employeeName} - {self.date} ({self.status})"
 
 # --------------------------------------------------------------------------------
+# AttendancePolicy Model: Versioned organization attendance & compliance policy
+# --------------------------------------------------------------------------------
+def default_weekly_holidays_policy():
+    return ["Saturday", "Sunday"]
+
+
+class AttendancePolicy(BaseModel):
+    BREAK_TYPE_CHOICES = [
+        ('Paid', 'Paid'),
+        ('Unpaid', 'Unpaid'),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='attendance_policies',
+    )
+    effective_from = models.DateField(db_index=True)
+
+    grace_period_minutes = models.IntegerField(default=15)
+    full_day_minimum_minutes = models.IntegerField(default=480)
+    half_day_minimum_minutes = models.IntegerField(default=240)
+    minimum_session_minutes = models.IntegerField(default=5)
+
+    break_duration_minutes = models.IntegerField(default=60)
+    break_type = models.CharField(max_length=20, choices=BREAK_TYPE_CHOICES, default='Unpaid')
+
+    default_weekly_holidays = models.JSONField(default=default_weekly_holidays_policy, blank=True)
+    auto_approve_attendance = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'api_attendancepolicy'
+        ordering = ['-effective_from']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'effective_from'],
+                name='unique_org_effective_from_policy'
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.organization.name if self.organization else 'Org'} Policy (From {self.effective_from})"
+
+
+# --------------------------------------------------------------------------------
 # Schedule Model: Defines office shift start/end timings mapped to employee designations
 # --------------------------------------------------------------------------------
 class Schedule(BaseModel):
-    designation = models.CharField(max_length=100, unique=True)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='schedules',
+    )
+    designation = models.CharField(max_length=100)
     shiftStart = models.CharField(max_length=5, default="09:00")
     shiftEnd = models.CharField(max_length=5, default="17:00")
 
     class Meta:
         db_table = 'api_schedule'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'designation'],
+                name='unique_org_designation_schedule'
+            )
+        ]
 
     def __str__(self):
         return f"{self.designation} ({self.shiftStart} - {self.shiftEnd})"
@@ -69,6 +128,7 @@ class LeaveType(BaseModel):
     maxCarryForward = models.IntegerField(default=0)
     status = models.CharField(max_length=50, default='Active')
     minAdvanceDays = models.IntegerField(default=0)
+    is_paid = models.BooleanField(default=True)
     organization = models.ForeignKey(
         Organization, null=True, blank=True,
         on_delete=models.CASCADE,
@@ -98,6 +158,9 @@ class Leave(BaseModel):
 
     class Meta:
         db_table = 'api_leave'
+        indexes = [
+            models.Index(fields=['employee', 'startDate', 'endDate', 'is_deleted'], name='leave_emp_dates_del_idx'),
+        ]
 
     def __str__(self):
         return f"{self.employeeName} - {self.leaveTypeName} ({self.startDate} to {self.endDate})"
@@ -144,5 +207,116 @@ class OfficeLocation(BaseModel):
 
     def __str__(self):
         return self.name
+
+
+# --------------------------------------------------------------------------------
+# AttendancePeriod Model: Represents monthly organization attendance container & lock status
+# --------------------------------------------------------------------------------
+class AttendancePeriod(BaseModel):
+    STATUS_CHOICES = [
+        ('Draft', 'Draft'),
+        ('Finalized', 'Finalized'),
+    ]
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='attendance_periods',
+    )
+    year = models.PositiveIntegerField(db_index=True)
+    month = models.PositiveSmallIntegerField(db_index=True)  # 1 - 12
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Draft', db_index=True)
+    current_revision = models.PositiveIntegerField(default=0)
+
+    finalized_at = models.DateTimeField(null=True, blank=True)
+    finalized_by = models.ForeignKey(
+        'users.Employee',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='finalized_attendance_periods',
+    )
+
+    total_employees = models.IntegerField(default=0)
+    payroll_ready_count = models.IntegerField(default=0)
+    needs_review_count = models.IntegerField(default=0)
+
+    reopen_reason = models.TextField(null=True, blank=True)
+    reopened_at = models.DateTimeField(null=True, blank=True)
+    reopened_by = models.ForeignKey(
+        'users.Employee',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reopened_attendance_periods',
+    )
+
+    class Meta:
+        db_table = 'api_attendanceperiod'
+        ordering = ['-year', '-month']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'year', 'month'],
+                name='unique_org_year_month_attendance_period'
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.organization.name if self.organization else 'Org'} - {self.year}/{self.month:02d} ({self.status} Rev {self.current_revision})"
+
+
+# --------------------------------------------------------------------------------
+# AttendancePeriodEmployeeSnapshot Model: Revision-tracked monthly snapshot per employee
+# --------------------------------------------------------------------------------
+class AttendancePeriodEmployeeSnapshot(BaseModel):
+    attendance_period = models.ForeignKey(
+        AttendancePeriod,
+        on_delete=models.CASCADE,
+        related_name='employee_snapshots',
+    )
+    revision = models.PositiveIntegerField(default=1)
+    is_current = models.BooleanField(default=True, db_index=True)
+
+    employee = models.ForeignKey(
+        'users.Employee',
+        on_delete=models.CASCADE,
+        related_name='attendance_snapshots',
+    )
+    employee_name = models.CharField(max_length=255)
+    designation = models.CharField(max_length=100, blank=True, default='')
+
+    # Aggregated monthly totals for Payroll
+    working_days = models.IntegerField(default=0)
+    present_days = models.FloatField(default=0.0)
+    half_days = models.IntegerField(default=0)
+    absent_days = models.IntegerField(default=0)
+    leave_days = models.FloatField(default=0.0)
+    paid_leave_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    unpaid_leave_days = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0.00"))
+    payable_attendance_units = models.FloatField(default=0.0)
+    late_count = models.IntegerField(default=0)
+    total_late_minutes = models.IntegerField(default=0)
+    total_worked_minutes = models.IntegerField(default=0)
+    payable_work_hours = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal("0.00"), help_text="Finalized payable work hours for hourly compensation calculation")
+    weekly_off_days = models.IntegerField(default=0)
+    holiday_days = models.IntegerField(default=0)
+    worked_on_off_days = models.IntegerField(default=0)
+
+    # Detailed daily calculations JSON list for complete auditability
+    daily_summaries = models.JSONField(default=list)
+
+    class Meta:
+        db_table = 'api_attendanceperiodemployeesnapshot'
+        ordering = ['employee_name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['attendance_period', 'employee', 'revision'],
+                name='unique_period_emp_revision_snapshot'
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.employee_name} - {self.attendance_period.year}/{self.attendance_period.month:02d} (Rev {self.revision})"
+
 
 

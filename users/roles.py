@@ -21,6 +21,11 @@ ALL_PERMISSION_DEFS = [
     { 'id': 'locations:manage', 'label': 'Manage Locations', 'category': 'locations', 'category_label': 'System Settings' },
     { 'id': 'settings:branding', 'label': 'Manage Branding', 'category': 'settings', 'category_label': 'System Settings' },
     { 'id': 'settings:billing', 'label': 'Manage Billing & Subscriptions', 'category': 'billing', 'category_label': 'System Settings' },
+    { 'id': 'salary:view', 'label': 'View Employee Salary Structures', 'category': 'salary', 'category_label': 'Salary Management' },
+    { 'id': 'salary:manage', 'label': 'Configure Salary Components & Manage Employee Salaries', 'category': 'salary', 'category_label': 'Salary Management' },
+    { 'id': 'payroll:view', 'label': 'View Payroll Calculations & Periods', 'category': 'payroll', 'category_label': 'Payroll Management' },
+    { 'id': 'payroll:process', 'label': 'Process & Calculate Payroll, Manage Adjustments', 'category': 'payroll', 'category_label': 'Payroll Management' },
+    { 'id': 'payroll:manage', 'label': 'Finalize & Reopen Monthly Payroll Periods', 'category': 'payroll', 'category_label': 'Payroll Management' },
 
     # Role & Permission Management
     { 'id': 'roles.view', 'label': 'View System & Custom Roles', 'category': 'roles', 'category_label': 'Administration' },
@@ -248,46 +253,50 @@ DEFAULT_ROLES = {
 def sync_default_roles(organization=None):
     """
     Idempotently synchronizes PermissionFlag and Role records into the relational database.
+    Only executes write queries if missing flags or roles are detected.
     """
     from users.models import PermissionFlag, Role
 
-    # 1. Sync PermissionFlag records
-    for flag_def in ALL_PERMISSION_DEFS:
-        key = flag_def['id']
-        name = flag_def.get('label', key)
-        category = flag_def.get('category', 'General')
-        module = flag_def.get('category_label', 'General')
+    if PermissionFlag.objects.count() < len(ALL_PERMISSION_DEFS):
+        for flag_def in ALL_PERMISSION_DEFS:
+            key = flag_def['id']
+            name = flag_def.get('label', key)
+            category = flag_def.get('category', 'General')
+            module = flag_def.get('category_label', 'General')
 
-        PermissionFlag.objects.update_or_create(
-            key=key,
-            defaults={
-                'name': name,
-                'category': category,
-                'module': module,
-                'is_active': True
-            }
-        )
+            PermissionFlag.objects.update_or_create(
+                key=key,
+                defaults={
+                    'name': name,
+                    'category': category,
+                    'module': module,
+                    'is_active': True
+                }
+            )
 
-    # 2. Sync Role records
+    existing_roles_count = Role.objects.filter(organization=organization, is_system_role=True).count()
+    if existing_roles_count >= len(DEFAULT_ROLES):
+        return
+
     for role_name, role_data in DEFAULT_ROLES.items():
         role_slug = role_data.get('slug', slugify(role_name))
 
-        role, created = Role.objects.get_or_create(
-            organization=organization,
-            slug=role_slug,
-            defaults={
-                'name': role_name,
-                'label': role_data.get('label', role_name),
-                'description': role_data.get('description', ''),
-                'is_system_role': True,
-                'is_active': True,
-            }
-        )
+        role = Role.objects.filter(organization=organization, slug=role_slug).first()
+        if not role:
+            role = Role.objects.create(
+                organization=organization,
+                slug=role_slug,
+                name=role_name,
+                label=role_data.get('label', role_name),
+                description=role_data.get('description', ''),
+                is_system_role=True,
+                is_active=True,
+            )
 
-        perm_keys = role_data.get('permissions', [])
-        if perm_keys == ALL_PERMISSION_KEYS:
-            perm_qs = PermissionFlag.objects.filter(is_active=True)
-        else:
-            perm_qs = PermissionFlag.objects.filter(key__in=perm_keys, is_active=True)
+            perm_keys = role_data.get('permissions', [])
+            if perm_keys == ALL_PERMISSION_KEYS:
+                perm_qs = PermissionFlag.objects.filter(is_active=True)
+            else:
+                perm_qs = PermissionFlag.objects.filter(key__in=perm_keys, is_active=True)
 
-        role.permissions.set(perm_qs)
+            role.permissions.set(perm_qs)

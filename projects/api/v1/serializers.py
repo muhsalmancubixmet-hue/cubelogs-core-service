@@ -30,6 +30,8 @@ from projects.selectors.sprints import sprints_for_user
 # ProjectStatusOption Serializers
 # --------------------------------------------------------------------------------
 class ProjectStatusOptionSerializer(serializers.ModelSerializer):
+    category = serializers.CharField(required=False)
+
     class Meta:
         model = ProjectStatusOption
         fields = [
@@ -69,6 +71,16 @@ class ProjectStatusOptionSerializer(serializers.ModelSerializer):
             code = attrs.get('code', '')
             if ProjectStatusOption.objects.filter(company=company, code=code).exists():
                 raise serializers.ValidationError({'code': 'A status with this code already exists for your company.'})
+
+        progress_pct = attrs.get('progress_percentage', getattr(self.instance, 'progress_percentage', None))
+        if progress_pct is not None and not (self.instance and self.instance.is_system):
+            if progress_pct == 0:
+                attrs['category'] = 'pending'
+            elif progress_pct == 100:
+                attrs['category'] = 'completed'
+            else:
+                attrs['category'] = 'active'
+
         return attrs
 
 

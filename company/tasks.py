@@ -36,6 +36,7 @@ except ImportError:
 
 # ── Standard Django + App Imports ────────────────────────────────────────────────
 from django.utils import timezone
+from django.db import transaction, IntegrityError
 from users.models import Employee
 from core.models import Organization, OrgSettings, AuditLog
 from subscribers.models import Wallet, WalletTransaction, MonthlyInvoice, GlobalBillingSettings
@@ -270,207 +271,229 @@ CubeLogs Billing Team"""
             # ── PRODUCTION MODE ───────────────────────────────────────────────
             now_dt = timezone.localtime(timezone.now())
             today = now_dt.date()
+            from company.api.v1.services import BillingService
+            from django.template.loader import render_to_string
 
-            # ── 1. INVOICE GENERATION ────────────────────────────────────────
-            # Runs on the configured generation day (e.g. 1st)
-            if today.day == g_settings.invoice_generation_day:
-                billing_month = today.replace(day=1)
-                
-                # Check if invoice already generated for this month
-                invoice, created = MonthlyInvoice.objects.get_or_create(
-                    organization=org,
-                    billing_month=billing_month,
-                    defaults={'amount': Decimal('0.00'), 'is_paid': False}
+            recipient_email = BillingService.get_billing_recipient_email(org)
+
+            # ── 1. CATCH-UP INVOICE GENERATION ──────────────────────────────
+            # Generate invoice for current month if missing (handles Celery down on Day 1 safely)
+            billing_month = today.replace(day=1)
+
+            # Check for missing historical invoices (Cross-Month Multi-Gap Recovery Detection)
+            # Detects every missing billing period between the organization's first eligible month
+            # and the month prior to current billing_month. Current state is never used to fabricate historical charges.
+            org_created_date = getattr(org, 'created_at', None)
+            if org_created_date and hasattr(org_created_date, 'date'):
+                org_created_date = org_created_date.date()
+            first_eligible_month = (org_created_date or today).replace(day=1)
+
+            curr_cursor = first_eligible_month
+            while curr_cursor < billing_month:
+                inv_exists = MonthlyInvoice.objects.filter(organization=org, billing_month=curr_cursor).exists()
+                if not inv_exists:
+                    logger.warning(
+                        "CROSS-MONTH BILLING RECOVERY GAP: Organization %s (ID: %s) is missing invoice for billing month %s. "
+                        "Current state will NOT be used to fabricate historical charges. Operational review required.",
+                        org.name, org.id, curr_cursor.strftime('%Y-%m-%d')
+                    )
+                days_in_curr = calendar.monthrange(curr_cursor.year, curr_cursor.month)[1]
+                curr_cursor = (curr_cursor + timedelta(days=days_in_curr)).replace(day=1)
+
+            inv_type = 'DATA_RETENTION' if settings_obj.subscriptionStatus == 'Restricted' else 'SUBSCRIPTION'
+
+            # DATA_RETENTION must not be generated incorrectly mid-month just because status became Restricted
+            if inv_type == 'DATA_RETENTION' and MonthlyInvoice.objects.filter(
+                organization=org, billing_month=billing_month, invoice_type='SUBSCRIPTION'
+            ).exists():
+                logger.info(
+                    "Skipping mid-month DATA_RETENTION invoice generation for org %s: SUBSCRIPTION invoice already exists for billing month %s.",
+                    org.name, billing_month
                 )
+                continue
 
-                if created:
-                    # Calculate subscription or rent cost dynamically on a per-day basis
-                    if settings_obj.subscriptionStatus != 'Restricted':
-                        rate = Decimal('0.00')
-                        days_in_month = calendar.monthrange(billing_month.year, billing_month.month)[1]
+            with transaction.atomic():
+                # Lock the parent Organization row to serialize concurrent billing workers for this tenant
+                Organization.objects.select_for_update().filter(id=org.id).first()
 
-                        if settings_obj.is_attendance_enabled:
-                            daily_att = Decimal(str(g_settings.attendance_module_price)) / Decimal(str(days_in_month))
-                            rate += daily_att * Decimal(str(days_in_month))
+                # Restore invoice identity: (organization, billing_month, invoice_type)
+                existing_inv = MonthlyInvoice.objects.filter(
+                    organization=org, billing_month=billing_month, invoice_type=inv_type
+                ).first()
 
-                        if settings_obj.is_project_enabled:
-                            daily_tasks = Decimal(str(g_settings.tasks_module_price)) / Decimal(str(days_in_month))
-                            rate += daily_tasks * Decimal(str(days_in_month))
+                if existing_inv:
+                    invoice = existing_inv
+                    created = False
+                else:
+                    try:
+                        invoice = MonthlyInvoice.objects.create(
+                            organization=org,
+                            billing_month=billing_month,
+                            invoice_type=inv_type,
+                            amount=Decimal('0.00'),
+                            is_paid=False
+                        )
+                        created = True
+                    except IntegrityError:
+                        invoice = MonthlyInvoice.objects.filter(
+                            organization=org, billing_month=billing_month, invoice_type=inv_type
+                        ).first()
+                        created = False
 
-                        active_emp_count = Employee.objects.filter(organization=org, is_active=True).count()
-                        amount = g_settings.monthly_subscription_price + (Decimal(str(active_emp_count)) * g_settings.employee_seat_price) + rate
-                    else:
-                        amount = g_settings.monthly_data_rent
-
-                    if g_settings.tax_percentage > 0:
-                        amount += amount * (g_settings.tax_percentage / Decimal('100.00'))
-
-                    invoice.amount = amount.quantize(Decimal('0.01'))
-                    invoice.save()
-
-                # Send invoice generated notification
-                if not invoice.invoice_email_sent:
-                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                    if superadmin:
+                    if created:
                         if settings_obj.subscriptionStatus != 'Restricted':
-                            subject = f"Invoice generated for workspace {org.name}"
-                            message = f"""Hi {superadmin.first_name or 'Superadmin'},
+                            emp_count = BillingService.get_billable_memberships_qs(org).count()
+                            seat_price = Decimal(str(g_settings.employee_seat_price))
+                            emp_total = Decimal(str(emp_count)) * seat_price
 
-An invoice of ₹{invoice.amount} {g_settings.currency} has been generated for workspace {org.name} for the month of {billing_month.strftime('%B %Y')}.
-An automatic wallet deduction check will run on the {g_settings.auto_deduction_day}th of this month at 12:00 PM.
+                            att_enabled = settings_obj.is_attendance_enabled
+                            att_unit = Decimal(str(g_settings.attendance_module_price)) if att_enabled else Decimal('0.00')
+                            att_total = (Decimal(str(emp_count)) * att_unit) if att_enabled else Decimal('0.00')
 
-Please ensure your prepaid wallet has sufficient balance.
+                            proj_enabled = settings_obj.is_project_enabled
+                            proj_unit = Decimal(str(g_settings.tasks_module_price)) if proj_enabled else Decimal('0.00')
+                            proj_total = (Decimal(str(emp_count)) * proj_unit) if proj_enabled else Decimal('0.00')
 
-Thank you,
-CubeLogs Billing Team"""
-                        else:
-                            subject = f"Data Retention Rent Invoice for workspace {org.name}"
-                            message = f"""Hi {superadmin.first_name or 'Superadmin'},
+                            total = emp_total + att_total + proj_total
 
-Your workspace {org.name} remains restricted/inactive.
-To store your historical data securely, a Data Retention Rent invoice of ₹{invoice.amount} {g_settings.currency} has been generated for {billing_month.strftime('%B %Y')}.
-
-Storage charges will continue accumulating until outstanding dues are paid.
-
-Thank you,
-CubeLogs Billing Team"""
-
-                        try:
-                            EmailService.queue_and_send_email(superadmin.email, subject, message)
-                            invoice.invoice_email_sent = True
+                            invoice.employee_count_snapshot = emp_count
+                            invoice.employee_unit_price_snapshot = seat_price
+                            invoice.employee_total_snapshot = emp_total
+                            invoice.base_price_snapshot = Decimal('0.00')
+                            invoice.attendance_enabled_snapshot = att_enabled
+                            invoice.attendance_unit_price_snapshot = att_unit
+                            invoice.attendance_total_snapshot = att_total
+                            invoice.attendance_price_snapshot = att_total
+                            invoice.project_enabled_snapshot = proj_enabled
+                            invoice.project_unit_price_snapshot = proj_unit
+                            invoice.project_total_snapshot = proj_total
+                            invoice.project_price_snapshot = proj_total
+                            invoice.subtotal_snapshot = total
+                            invoice.tax_percentage_snapshot = Decimal('0.00')
+                            invoice.tax_amount_snapshot = Decimal('0.00')
+                            invoice.amount = total.quantize(Decimal('0.01'))
                             invoice.save()
-                        except Exception as e:
-                            logger.error(f"Failed to send invoice email for {org.name}: {e}")
+                        else:
+                            invoice.amount = Decimal(str(g_settings.monthly_data_rent)).quantize(Decimal('0.01'))
+                            invoice.save()
+
+            # Calendar-Safe Date Boundary Computations
+            month_max_day = calendar.monthrange(billing_month.year, billing_month.month)[1]
+            deduction_day_clamped = min(g_settings.auto_deduction_day, month_max_day)
+            auto_deduction_date = billing_month.replace(day=deduction_day_clamped)
+            reminder_date = auto_deduction_date - timedelta(days=g_settings.reminder_email_days_before)
+            restriction_date = auto_deduction_date + timedelta(days=g_settings.grace_period_days)
+
+            # Send HTML Monthly Invoice Email ONCE per invoice
+            if not invoice.invoice_email_sent and recipient_email:
+                subject = f"Invoice generated for workspace {org.name}" if settings_obj.subscriptionStatus != 'Restricted' else f"Data Retention Rent Invoice for workspace {org.name}"
+
+                wallet_bal = wallet.balance if wallet else Decimal('0.00')
+                req_recharge = max(Decimal('0.00'), invoice.amount - wallet_bal)
+                add_money_url = f"{django_settings.FRONTEND_URL}/admin/settings?tab=billing"
+                view_invoice_url = f"{django_settings.FRONTEND_URL}/admin/settings?tab=billing&invoice_id={invoice.id}"
+                auto_deduction_date_str = auto_deduction_date.strftime('%B %d, %Y at 12:00 PM')
+
+                try:
+                    html_content = render_to_string(
+                        "emails/billing/monthly_invoice.html",
+                        {
+                            "org_name": org.name,
+                            "billing_month": billing_month.strftime('%B %Y'),
+                            "base_price": invoice.base_price_snapshot or Decimal('0.00'),
+                            "employee_count": invoice.employee_count_snapshot or 0,
+                            "unit_price": invoice.employee_unit_price_snapshot or g_settings.employee_seat_price,
+                            "employee_total": invoice.employee_total_snapshot or Decimal('0.00'),
+                            "attendance_enabled": invoice.attendance_enabled_snapshot,
+                            "attendance_unit_price": invoice.attendance_unit_price_snapshot or g_settings.attendance_module_price,
+                            "attendance_price": invoice.attendance_total_snapshot or invoice.attendance_price_snapshot or Decimal('0.00'),
+                            "project_enabled": invoice.project_enabled_snapshot,
+                            "project_unit_price": invoice.project_unit_price_snapshot or g_settings.tasks_module_price,
+                            "project_price": invoice.project_total_snapshot or invoice.project_price_snapshot or Decimal('0.00'),
+                            "subtotal": invoice.subtotal_snapshot or invoice.amount,
+                            "tax_percentage": invoice.tax_percentage_snapshot or Decimal('0.00'),
+                            "tax_amount": invoice.tax_amount_snapshot or Decimal('0.00'),
+                            "total_amount": invoice.amount,
+                            "wallet_balance": wallet_bal,
+                            "auto_deduction_date": auto_deduction_date_str,
+                            "required_recharge": req_recharge,
+                            "add_money_url": add_money_url,
+                            "view_invoice_url": view_invoice_url,
+                            "product_support_email": django_settings.SUPPORT_EMAIL,
+                            "product_website": django_settings.COMPANY_WEBSITE,
+                            "product_company_name": django_settings.COMPANY_NAME,
+                        }
+                    )
+                    EmailService.send_transactional_email(recipient_email, subject, html_content, 'MONTHLY_INVOICE')
+                    invoice.invoice_email_sent = True
+                    invoice.save()
+                except Exception as e:
+                    logger.error(f"Failed to send invoice email for {org.name}: {e}")
 
             # ── 2. DEDUCTION REMINDER ────────────────────────────────────────
-            # Runs X days before the auto deduction day
-            reminder_day = g_settings.auto_deduction_day - g_settings.reminder_email_days_before
-            if today.day == reminder_day and now_dt.hour == 12:
-                reminder_key = f"org_{org.id}_deduction_reminder_sent_{today.year}_{today.month}"
-                if not cache.get(reminder_key):
-                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                    if superadmin:
-                        unpaid_invoices = MonthlyInvoice.objects.filter(organization=org, is_paid=False)
-                        total_due = sum(inv.amount for inv in unpaid_invoices)
-                        if total_due > 0:
-                            subject = f"Deduction Alert: Automatic Wallet Payment Pending for {org.name}"
-                            message = f"""Hi {superadmin.first_name or 'Superadmin'},
+            if today >= reminder_date and today < auto_deduction_date:
+                if not invoice.deduction_reminder_sent and not invoice.is_paid and recipient_email:
+                    unpaid_invoices = MonthlyInvoice.objects.filter(organization=org, is_paid=False)
+                    total_due = sum(inv.amount for inv in unpaid_invoices)
+                    if total_due > 0:
+                        subject = f"Deduction Alert: Automatic Wallet Payment Pending for {org.name}"
+                        message = f"""Hi,
 
-This is an automated notice that we will attempt to deduct your outstanding workspace dues of ₹{total_due} {g_settings.currency} automatically from your prepaid wallet balance on the {g_settings.auto_deduction_day}th of this month starting at 12:00 PM.
+This is an automated notice that we will attempt to deduct your outstanding workspace dues of ₹{total_due} {g_settings.currency} automatically from your prepaid wallet balance on {auto_deduction_date.strftime('%B %d, %Y')} starting at 12:00 PM.
 
 Please ensure your wallet has sufficient balance to avoid service restriction.
 
 Thank you,
 CubeLogs Billing Team"""
-                            try:
-                                EmailService.queue_and_send_email(superadmin.email, subject, message)
-                                cache.set(reminder_key, True, 86400 * 2)
-                            except Exception as e:
-                                logger.error(f"Failed to send deduction warning: {e}")
+                        try:
+                            EmailService.queue_and_send_email(recipient_email, subject, message)
+                            invoice.deduction_reminder_sent = True
+                            invoice.save()
+                        except Exception as e:
+                            logger.error(f"Failed to send deduction warning for {org.name}: {e}")
 
             # ── 3. AUTOMATIC DEDUCTION ───────────────────────────────────────
-            # Runs on the configured deduction day at 12:00 PM
-            if today.day == g_settings.auto_deduction_day and now_dt.hour == 12:
-                deduction_lock_key = f"org_{org.id}_last_deduction_attempt_{today.year}_{today.month}"
-                if not cache.get(deduction_lock_key):
-                    unpaid_invoices = list(MonthlyInvoice.objects.filter(organization=org, is_paid=False))
-                    total_due = sum(inv.amount for inv in unpaid_invoices)
+            if today >= auto_deduction_date:
+                unpaid_exists = MonthlyInvoice.objects.filter(organization=org, is_paid=False).exists()
+                if unpaid_exists and wallet:
+                    prev_status = settings_obj.subscriptionStatus
+                    BillingService.process_outstanding_dues(wallet)
+                    settings_obj.refresh_from_db()
 
-                    if total_due > 0:
-                        safe_balance = Decimal(str(wallet.balance)) if wallet else Decimal('0.00')
-
-                        if wallet and safe_balance >= total_due:
-                            # ✅ Payment Successful Workflow
-                            wallet.balance = safe_balance - total_due
-                            wallet.save()
-
-                            for inv in unpaid_invoices:
-                                inv.is_paid = True
-                                inv.paid_at = timezone.now()
-                                inv.save()
-
-                            WalletTransaction.objects.create(
-                                wallet=wallet,
-                                amount=total_due,
-                                transactionType='Debit',
-                                success=True,
-                                status='Success',
-                                details=f"Automated wallet deduction: Outstanding invoices cleared."
-                            )
-
-                            settings_obj.subscriptionStatus = 'Active'
-                            settings_obj.save()
-
-                            superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                            if superadmin:
-                                subject = f"Notice: Payment Successful for {org.name}"
-                                message = f"""Hi {superadmin.first_name or 'Superadmin'},
-
-Thank you! Your outstanding dues of ₹{total_due} {g_settings.currency} have been successfully deducted from your wallet.
-Your workspace is active.
-Updated Wallet Balance: ₹{wallet.balance} {g_settings.currency}.
-
-CubeLogs Billing Team"""
-                                try:
-                                    EmailService.queue_and_send_email(superadmin.email, subject, message)
-                                except Exception as e:
-                                    logger.error(f"Failed to send payment success email: {e}")
-                        else:
-                            # ❌ Payment Failed Workflow
-                            settings_obj.subscriptionStatus = 'Pending Payment'
-                            settings_obj.save()
-
-                            WalletTransaction.objects.create(
-                                wallet=wallet,
-                                amount=total_due,
-                                transactionType='Debit',
-                                success=False,
-                                status='Failed',
-                                details=f"Auto-deduction failed: Insufficient balance. Required: ₹{total_due}."
-                            )
-
-                            AuditLog.objects.create(
-                                employee=wallet.employee if wallet else None,
-                                employeeName="System / Celery",
-                                action="Subscription Renewal Failure",
-                                details=f"Workspace {org.name} deduction failed due to insufficient wallet balance (Required: ₹{total_due})."
-                            )
-
-                            superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                            if superadmin:
-                                subject = f"Payment Failed: Subscription Renewal for {org.name}"
-                                message = f"""Hi {superadmin.first_name or 'Superadmin'},
+                    # Send Payment Failed notification if invoice remains unpaid after deduction attempt
+                    invoice.refresh_from_db()
+                    if not invoice.is_paid and not invoice.payment_failed_email_sent and recipient_email:
+                        unpaid_invoices = MonthlyInvoice.objects.filter(organization=org, is_paid=False)
+                        total_due = sum(inv.amount for inv in unpaid_invoices)
+                        subject = f"Payment Failed: Subscription Renewal for {org.name}"
+                        message = f"""Hi,
 
 Your automated subscription payment renewal has FAILED due to insufficient wallet balance.
 Status is now Pending Payment. Please recharge your wallet immediately to prevent service restriction.
 
 Required Amount: ₹{total_due} {g_settings.currency}
-Current Wallet Balance: ₹{wallet.balance if wallet else '0.00'} {g_settings.currency}
+Current Wallet Balance: ₹{wallet.balance} {g_settings.currency}
 
 Thank you,
 CubeLogs Billing Team"""
-                                try:
-                                    EmailService.queue_and_send_email(superadmin.email, subject, message)
-                                except Exception as e:
-                                    logger.error(f"Failed to send failure email: {e}")
-
-                        # Set lock so we don't retry again during this minute's run
-                        cache.set(deduction_lock_key, True, 60)
+                        try:
+                            EmailService.queue_and_send_email(recipient_email, subject, message)
+                            invoice.payment_failed_email_sent = True
+                            invoice.save()
+                        except Exception as e:
+                            logger.error(f"Failed to send failure email for {org.name}: {e}")
 
             # ── 4. GRACE PERIOD & RESTRICTION WORKFLOW ───────────────────────
-            # Transition to Restricted status if still unpaid after grace period
-            limit_day = g_settings.auto_deduction_day + g_settings.grace_period_days
-            if today.day > limit_day:
+            if today > restriction_date:
                 unpaid_count = MonthlyInvoice.objects.filter(organization=org, is_paid=False).count()
                 if unpaid_count > 0:
                     if settings_obj.subscriptionStatus != 'Restricted':
                         settings_obj.subscriptionStatus = 'Restricted'
                         settings_obj.save()
 
-                        superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                        if superadmin:
-                            subject = f"Alert: Workspace Restricted for {org.name}"
-                            message = f"""Hi {superadmin.first_name or 'Superadmin'},
+                    if not invoice.restriction_email_sent and recipient_email:
+                        subject = f"Alert: Workspace Restricted for {org.name}"
+                        message = f"""Hi,
 
 Your workspace {org.name} has been RESTRICTED because your outstanding dues are overdue and the grace period has ended.
 Your premium modules have been restricted. Note that all of your data has been retained safely and is NOT deleted.
@@ -479,8 +502,85 @@ To restore full access, please deposit outstanding dues into your wallet immedia
 
 Thank you,
 CubeLogs Billing Team"""
-                            try:
-                                EmailService.queue_and_send_email(superadmin.email, subject, message)
-                            except Exception as e:
-                                logger.error(f"Failed to send workspace restriction email for {org.name}: {e}")
+                        try:
+                            EmailService.queue_and_send_email(recipient_email, subject, message)
+                            invoice.restriction_email_sent = True
+                            invoice.save()
+                        except Exception as e:
+                            logger.error(f"Failed to send workspace restriction email for {org.name}: {e}")
+
+
+@shared_task
+def reconcile_pending_wallet_transactions(threshold_hours=24):
+    """
+    Reconciles stale 'Pending' WalletTransactions older than threshold_hours (default 24h).
+    Gateway state is authoritative:
+    - If Razorpay order is paid/captured: route through central idempotent credit_wallet_from_payment().
+    - If failed/expired/abandoned at gateway, or stale created/attempted past threshold: status -> 'Abandoned'.
+    - Financial history is durably preserved; rows are never deleted.
+    """
+    from datetime import timedelta
+    cutoff = timezone.now() - timedelta(hours=threshold_hours)
+    pending_txs = list(
+        WalletTransaction.objects.filter(
+            status='Pending',
+            created_at__lt=cutoff
+        ).select_related('wallet', 'wallet__organization')
+    )
+
+    if not pending_txs:
+        return 0
+
+    from subscribers.api.v1.views import get_razorpay_client
+    client, _, _ = get_razorpay_client()
+    from company.api.v1.services import BillingService
+
+    reconciled_count = 0
+    for tx in pending_txs:
+        if not tx.razorpay_order_id:
+            continue
+
+        # Stale mock orders in dev/test environment
+        if tx.razorpay_order_id.startswith('mock_'):
+            tx.status = 'Abandoned'
+            tx.save(update_fields=['status', 'updated_at'])
+            reconciled_count += 1
+            continue
+
+        if not client:
+            # Cannot reach gateway; leave untouched for next reconciliation run
+            continue
+
+        try:
+            order = client.order.fetch(tx.razorpay_order_id)
+            order_status = order.get('status')
+            payments = client.order.payments(tx.razorpay_order_id)
+            items = payments.get('items', []) if isinstance(payments, dict) else payments
+            captured_pay = None
+            for p in items:
+                if p.get('status') == 'captured':
+                    captured_pay = p
+                    break
+
+            if captured_pay:
+                pay_id = captured_pay.get('id')
+                amount_paise = captured_pay.get('amount', 0)
+                amount_dec = Decimal(str(amount_paise)) / Decimal('100.0')
+                BillingService.credit_wallet_from_payment(
+                    wallet_id=tx.wallet_id,
+                    amount_dec=amount_dec,
+                    razorpay_order_id=tx.razorpay_order_id,
+                    razorpay_payment_id=pay_id,
+                    target_org_id=tx.wallet.organization_id if tx.wallet else None,
+                    details="Reconciled wallet deposit via automated task"
+                )
+                reconciled_count += 1
+            elif order_status in ['attempted', 'created']:
+                tx.status = 'Abandoned'
+                tx.save(update_fields=['status', 'updated_at'])
+                reconciled_count += 1
+        except Exception as exc:
+            logger.warning(f"Reconciliation check skipped for tx {tx.id} ({tx.razorpay_order_id}): {exc}")
+
+    return reconciled_count
 

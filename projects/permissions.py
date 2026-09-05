@@ -108,7 +108,7 @@ class IsProjectObjectOwnerOrLead(permissions.BasePermission):
 # --------------------------------------------------------------------------------
 # Centralized Project Effective Permission Evaluator
 # --------------------------------------------------------------------------------
-def get_project_effective_permissions(employee, project=None):
+def get_project_effective_permissions(employee, project=None, active_membership=None):
     """
     Computes effective permissions for an employee within a specific project:
     Project Effective Permissions = System Role Permissions + User Extra Permissions - User Denied Permissions + Project Role Permissions
@@ -116,22 +116,39 @@ def get_project_effective_permissions(employee, project=None):
     if not (employee and employee.is_authenticated):
         return []
 
-    cache_key = f"_project_perms_cache_{project.id}" if project else "_project_perms_cache_none"
+    # Fail closed if membership in organization is inactive
+    if active_membership and not getattr(active_membership, 'is_active_in_org', True):
+        return []
+
+    # Enforce tenant isolation: cross-tenant access to project must fail closed
+    if project and active_membership:
+        project_org_id = getattr(project, 'company_id', None) or getattr(project, 'organization_id', None)
+        mem_org_id = getattr(active_membership, 'organization_id', None)
+        if project_org_id and mem_org_id and project_org_id != mem_org_id:
+            return []
+
+    cache_suffix = f"_{active_membership.id}" if active_membership else ""
+    cache_key = f"_project_perms_cache_{project.id}{cache_suffix}" if project else f"_project_perms_cache_none{cache_suffix}"
     if hasattr(employee, cache_key):
         return getattr(employee, cache_key)
 
-    if employee.is_superuser or getattr(employee, 'isSuperAdmin', False) or (employee.role and employee.role.slug in ['super-admin', 'company-admin']) or getattr(employee, 'role_name', None) in ['Super Admin', 'Company Admin', 'Admin']:
+    effective_role = active_membership.role if (active_membership and active_membership.role) else employee.role
+
+    if employee.is_superuser or getattr(employee, 'isSuperAdmin', False) or (effective_role and effective_role.slug in ['super-admin', 'company-admin']) or getattr(employee, 'role_name', None) in ['Super Admin', 'Company Admin', 'Admin']:
         from users.roles import ALL_PERMISSION_KEYS
         setattr(employee, cache_key, ALL_PERMISSION_KEYS)
         return ALL_PERMISSION_KEYS
 
-    base_perms = set(employee.get_effective_permissions()) if hasattr(employee, 'get_effective_permissions') else set(getattr(employee, 'permissions', []))
+    if hasattr(employee, 'get_effective_permissions'):
+        base_perms = set(employee.get_effective_permissions(active_membership=active_membership))
+    else:
+        base_perms = set(getattr(employee, 'permissions', []))
 
     # Check if user has global projects capability (any project-related permission globally)
     # or belongs to standard employee roles
     has_global_projects_view = any(p.startswith('project') for p in base_perms)
-    if not has_global_projects_view and employee.role:
-        if employee.role.slug in ['employee', 'project-manager']:
+    if not has_global_projects_view and effective_role:
+        if effective_role.slug in ['employee', 'project-manager']:
             has_global_projects_view = True
 
     if not has_global_projects_view:
@@ -145,7 +162,11 @@ def get_project_effective_permissions(employee, project=None):
 
     # Strip any permission starting with 'project' from global base_perms
     # to ensure that the project-specific role's permissions are authoritative.
+    # Preserve system/tenant-level project deletion capability if explicitly granted.
+    has_projects_delete = 'projects:delete' in base_perms
     base_perms = {p for p in base_perms if not p.startswith('project')}
+    if has_projects_delete:
+        base_perms.add('projects:delete')
 
     from projects.models import ProjectMember
     from projects.constants import PROJECT_ROLE_PERMISSIONS
@@ -179,13 +200,14 @@ def get_project_effective_permissions(employee, project=None):
     return res
 
 
-def has_project_permission(employee, permissions, project=None):
+def has_project_permission(employee, permissions, project=None, active_membership=None):
     if not (employee and employee.is_authenticated):
         return False
-    if employee.is_superuser or getattr(employee, 'isSuperAdmin', False) or (employee.role and employee.role.slug in ['super-admin', 'company-admin']) or getattr(employee, 'role_name', None) in ['Super Admin', 'Company Admin', 'Admin']:
+    effective_role = active_membership.role if (active_membership and active_membership.role) else employee.role
+    if employee.is_superuser or getattr(employee, 'isSuperAdmin', False) or (effective_role and effective_role.slug in ['super-admin', 'company-admin']) or getattr(employee, 'role_name', None) in ['Super Admin', 'Company Admin', 'Admin']:
         return True
 
-    effective = get_project_effective_permissions(employee, project)
+    effective = get_project_effective_permissions(employee, project, active_membership=active_membership)
     if isinstance(permissions, str):
         permissions = [permissions]
     return any(p in effective for p in permissions)
@@ -243,38 +265,40 @@ class HasProjectPermission(permissions.BasePermission):
             except Exception:
                 pass
 
+        active_org = getattr(user, 'active_organization', None) or getattr(request, 'active_organization', None) or getattr(user, 'organization', None)
+
         # 2. Query parameters check
         if not project:
             project_id = request.query_params.get('project_id') or request.query_params.get('project')
             if project_id:
                 from projects.models import Project
-                project = Project.objects.filter(id=project_id, company=user.organization, is_deleted=False).first()
+                project = Project.objects.filter(id=project_id, company=active_org, is_deleted=False).first()
 
         # 3. Request body check
         if not project and request.data:
             project_id = request.data.get('project') or request.data.get('project_id')
             if project_id:
                 from projects.models import Project
-                project = Project.objects.filter(id=project_id, company=user.organization, is_deleted=False).first()
+                project = Project.objects.filter(id=project_id, company=active_org, is_deleted=False).first()
 
         # 4. Fallback for nested objects in data
         if not project and request.data:
             epic_id = request.data.get('epic')
             if epic_id:
                 from projects.models import ProjectEpic
-                epic = ProjectEpic.objects.filter(id=epic_id, project__company=user.organization).first()
+                epic = ProjectEpic.objects.filter(id=epic_id, project__company=active_org).first()
                 if epic:
                     project = epic.project
             story_id = request.data.get('story')
             if story_id:
                 from projects.models import ProjectStory
-                story = ProjectStory.objects.filter(id=story_id, project__company=user.organization).first()
+                story = ProjectStory.objects.filter(id=story_id, project__company=active_org).first()
                 if story:
                     project = story.project
             task_id = request.data.get('task')
             if task_id:
                 from projects.models import ProjectTask
-                task = ProjectTask.objects.filter(id=task_id, story__project__company=user.organization).first()
+                task = ProjectTask.objects.filter(id=task_id, story__project__company=active_org).first()
                 if task:
                     project = task.story.project
 
@@ -293,4 +317,5 @@ class HasProjectPermission(permissions.BasePermission):
 
         # Evaluate capability check with project context
         from core.decorators import has_fine_grained_permission
-        return has_fine_grained_permission(user, required_permission, project=project)
+        active_membership = getattr(request, 'active_membership', None)
+        return has_fine_grained_permission(user, required_permission, project=project, active_membership=active_membership)

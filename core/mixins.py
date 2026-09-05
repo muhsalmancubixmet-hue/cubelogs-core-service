@@ -115,20 +115,23 @@ class FilterMixinNew:
 class TenantScopedViewSetMixin:
     """
     Mixin that automatically filters querysets by the logged-in user's organization
-    and auto-assigns the organization during model creation.
+    and auto-assigns the organization during model creation, while excluding soft-deleted records.
     """
     def get_queryset(self):
         qs = super().get_queryset()
         user = self.request.user
-        if user.is_authenticated and getattr(user, 'organization', None):
-            model = self.queryset.model
+        model = getattr(self, 'queryset', None).model if getattr(self, 'queryset', None) is not None else getattr(qs, 'model', None)
+        if model:
             fields = [f.name for f in model._meta.get_fields()]
-            if 'organization' in fields:
-                qs = qs.filter(organization=user.organization)
-            elif 'employee' in fields:
-                qs = qs.filter(employee__organization=user.organization)
-            elif 'assignedTo' in fields:
-                qs = qs.filter(assignedTo__organization=user.organization)
+            if 'is_deleted' in fields:
+                qs = qs.filter(is_deleted=False)
+            if user.is_authenticated and getattr(user, 'organization', None):
+                if 'organization' in fields:
+                    qs = qs.filter(organization=user.organization)
+                elif 'employee' in fields:
+                    qs = qs.filter(employee__organization=user.organization)
+                elif 'assignedTo' in fields:
+                    qs = qs.filter(assignedTo__organization=user.organization)
         return qs
 
     def perform_create(self, serializer):

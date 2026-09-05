@@ -1040,16 +1040,28 @@
 
       <div class="panel">
         <div class="panel-header">
-          <h2 class="panel-title">Monthly Data Retention Rent Configuration</h2>
+          <h2 class="panel-title">Monthly Platform Rates Configuration</h2>
         </div>
         <form id="data-rent-form" onsubmit="saveDataRetentionRent(event)">
-          <div class="form-grid" style="grid-template-columns: minmax(220px, 400px);">
+          <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 300px)); gap: 16px;">
+            <div class="form-group">
+              <label>Employee Seat Price (₹ / employee / mo) *</label>
+              <input type="number" step="0.01" id="m-seat-price" required placeholder="50.00">
+            </div>
+            <div class="form-group">
+              <label>Attendance Module Price (₹ / employee / mo) *</label>
+              <input type="number" step="0.01" id="m-att-price" required placeholder="99.00">
+            </div>
+            <div class="form-group">
+              <label>Project Module Price (₹ / employee / mo) *</label>
+              <input type="number" step="0.01" id="m-proj-price" required placeholder="56.00">
+            </div>
             <div class="form-group">
               <label>Monthly Data Retention Rent (₹) *</label>
               <input type="number" step="0.01" id="m-rent-price" required placeholder="50.00">
             </div>
           </div>
-          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Data Retention Rent</button>
+          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Platform Rates</button>
         </form>
       </div>
 
@@ -1578,7 +1590,7 @@
               <option value="">All Organizations</option>
             </select>
             <input type="date" id="filter-audit-date" onchange="fetchAuditLogs()" style="padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);">
-            <input type="text" placeholder="Search logs..." style="width: 200px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);" oninput="auditSearchQuery = this.value; renderAuditLogs()">
+            <input type="text" placeholder="Search logs..." style="width: 200px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);" oninput="onAuditSearchInput(this.value)">
           </div>
         </div>
         <div class="table-container">
@@ -1599,6 +1611,14 @@
               </tr>
             </tbody>
           </table>
+        </div>
+        <div id="audit-pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 0 4px; font-size: 0.85rem; color: var(--text-muted);">
+          <span id="audit-pagination-info">Showing 0 of 0 logs</span>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button id="audit-prev-btn" class="btn btn-sm" onclick="changeAuditPage(-1)" disabled style="padding: 5px 14px; font-size: 0.8rem;">Previous</button>
+            <span id="audit-page-num" style="font-weight: 600;">Page 1 of 1</span>
+            <button id="audit-next-btn" class="btn btn-sm" onclick="changeAuditPage(1)" disabled style="padding: 5px 14px; font-size: 0.8rem;">Next</button>
+          </div>
         </div>
       </div>
     </section>
@@ -1788,6 +1808,15 @@
       }
       if (method === 'DELETE') return null;
       return response.json();
+    }
+
+    // Defensive response shape normalization wrapper
+    function normalizeArrayResponse(data) {
+      if (Array.isArray(data)) return data;
+      if (data && typeof data === 'object' && Array.isArray(data.results)) return data.results;
+      if (data === null || data === undefined) return [];
+      console.warn('apiFetch returned non-array / non-paginated object response:', data);
+      return [];
     }
 
     // Showing alerts
@@ -2007,9 +2036,10 @@
           });
         }
         
-        const data = await apiFetch('/api/packages/');
-        const subscribersData = await apiFetch('/api/subscribers/');
-        window.allSubscribersList = subscribersData || [];
+        const rawPackages = await apiFetch('/api/packages/');
+        const data = normalizeArrayResponse(rawPackages);
+        const rawSubscribers = await apiFetch('/api/subscribers/');
+        window.allSubscribersList = normalizeArrayResponse(rawSubscribers);
 
         // Fetch live GlobalBillingSettings so the displayed price reflects the actual billing engine prices
         let globalBillingSettings = null;
@@ -2229,8 +2259,13 @@
     async function fetchSubscribers() {
       const body = document.getElementById('subscribers-table-body');
       try {
-        const data = await apiFetch('/api/subscribers/');
-        subscriberItems = data;
+        const rawData = await apiFetch('/api/subscribers/');
+        subscriberItems = normalizeArrayResponse(rawData);
+        if (rawData && typeof rawData === 'object' && !Array.isArray(rawData)) {
+          window.subscribersPaginationMeta = { count: rawData.count, next: rawData.next, previous: rawData.previous };
+        } else {
+          window.subscribersPaginationMeta = null;
+        }
         renderSubscribers();
         updateHeaderMetrics();
       } catch (err) {
@@ -2258,14 +2293,14 @@
     async function fetchCMS() {
       const body = document.getElementById('cms-table-body');
       try {
-        const data = await apiFetch('/api/cms/');
-        cmsItems = data;
-        if (data.length === 0) {
+        const rawData = await apiFetch('/api/cms/');
+        cmsItems = normalizeArrayResponse(rawData);
+        if (cmsItems.length === 0) {
           body.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-light);">No CMS copywriting fields created.</td></tr>`;
           return;
         }
         body.innerHTML = '';
-        data.forEach(item => {
+        cmsItems.forEach(item => {
           const updateDate = new Date(item.updatedAt).toLocaleString();
           const row = document.createElement('tr');
           row.innerHTML = `
@@ -2298,7 +2333,8 @@
       const value = document.getElementById('cms-value').value;
 
       try {
-        const list = await apiFetch('/api/cms/');
+        const rawList = await apiFetch('/api/cms/');
+        const list = normalizeArrayResponse(rawList);
         const existing = list.find(c => c.key === key);
         
         if (existing) {
@@ -2395,7 +2431,8 @@
     async function fetchCoupons() {
       const body = document.getElementById('coupons-table-body');
       try {
-        const data = await apiFetch('/api/backoffice/coupons/');
+        const rawData = await apiFetch('/api/backoffice/coupons/');
+        const data = normalizeArrayResponse(rawData);
         if (data.length === 0) {
           body.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-light);">No coupons configured.</td></tr>`;
           return;
@@ -2463,9 +2500,13 @@
     // Dynamic Metrics calculation
     async function updateHeaderMetrics() {
       try {
-        const packages = await apiFetch('/api/packages/');
-        const subscribers = await apiFetch('/api/subscribers/');
-        const leads = await apiFetch('/api/leads/backoffice/');
+        const rawPackages = await apiFetch('/api/packages/');
+        const rawSubscribers = await apiFetch('/api/subscribers/');
+        const rawLeads = await apiFetch('/api/leads/backoffice/');
+
+        const packages = normalizeArrayResponse(rawPackages);
+        const subscribers = normalizeArrayResponse(rawSubscribers);
+        const leads = normalizeArrayResponse(rawLeads);
 
         // Map package names to employee limit
         const limitMap = {};
@@ -2501,7 +2542,12 @@
       let filtered = leadItems;
       if (leadSearchQuery) {
         const q = leadSearchQuery.toLowerCase();
-        filtered = leadItems.filter(l => l.name.toLowerCase().includes(q) || l.email.toLowerCase().includes(q) || (l.companyName && l.companyName.toLowerCase().includes(q)));
+        filtered = leadItems.filter(l => {
+          const nameStr = (l.name || l.companyName || l.email || '').toLowerCase();
+          const emailStr = (l.email || '').toLowerCase();
+          const companyStr = (l.companyName || '').toLowerCase();
+          return nameStr.includes(q) || emailStr.includes(q) || companyStr.includes(q);
+        });
       }
 
       if (filtered.length === 0) {
@@ -2511,6 +2557,7 @@
       body.innerHTML = '';
       filtered.forEach(lead => {
         const created = new Date(lead.created_at || lead.createdAt).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year:'numeric' });
+        const displayName = lead.name || lead.companyName || lead.email || 'Lead';
 
         const statusColor = lead.status === 'New' ? '#3b82f6' : lead.status === 'In Progress' ? '#f59e0b' : '#10b981';
         const statusBg   = lead.status === 'New' ? '#eff6ff' : lead.status === 'In Progress' ? '#fffbeb' : '#f0fdf4';
@@ -2527,8 +2574,8 @@
         const row = document.createElement('tr');
         row.style.cssText = 'font-size:0.81rem;';
         row.innerHTML = `
-          <td style="font-weight:600; color:var(--text-main); max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(lead.name)}">${escapeHtml(lead.name)}</td>
-          <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted);" title="${escapeHtml(lead.email)}">${escapeHtml(lead.email)}</td>
+          <td style="font-weight:600; color:var(--text-main); max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</td>
+          <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted);" title="${escapeHtml(lead.email || '')}">${escapeHtml(lead.email || '—')}</td>
           <td style="color:var(--text-muted); white-space:nowrap;">${escapeHtml(lead.companyName || '—')}</td>
           <td>${statusBadge}</td>
           <td>${readBadge}</td>
@@ -2548,8 +2595,8 @@
     async function fetchLeads() {
       const body = document.getElementById('leads-table-body');
       try {
-        const data = await apiFetch('/api/leads/backoffice/');
-        leadItems = data;
+        const rawData = await apiFetch('/api/leads/backoffice/');
+        leadItems = normalizeArrayResponse(rawData);
         renderLeads();
       } catch (err) {
         body.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #ef4444;">Failed to read leads: ${err.message}</td></tr>`;
@@ -2684,15 +2731,15 @@
 
     async function fetchOrganizations() {
       try {
-        const data = await apiFetch('/backoffice/organizations/');
-        cachedOrgs = data;
+        const rawData = await apiFetch('/api/backoffice/organizations/');
+        cachedOrgs = normalizeArrayResponse(rawData);
         
         const filterAuditOrg = document.getElementById('filter-audit-org');
         if (filterAuditOrg) {
           const prevFilterAuditVal = filterAuditOrg.value;
           filterAuditOrg.innerHTML = '<option value="">All Organizations</option>';
           
-          data.forEach(org => {
+          cachedOrgs.forEach(org => {
             const opt = document.createElement('option');
             opt.value = org.id;
             opt.textContent = org.name;
@@ -2710,8 +2757,8 @@
       const body = document.getElementById('staff-table-body');
       if (!body) return;
       try {
-        const data = await apiFetch('/api/employees/?backoffice_only=true');
-        staffItems = data;
+        const rawData = await apiFetch('/api/employees/?backoffice_only=true');
+        staffItems = normalizeArrayResponse(rawData);
         renderStaff();
       } catch (err) {
         body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444;">Failed to read staff: ${err.message}</td></tr>`;
@@ -2837,55 +2884,90 @@
       }
     }
 
-    // 8. Audit Logs Logic
+    // 8. Audit Logs Logic (Server-Side Pagination & Search)
     let auditItems = [];
     let auditSearchQuery = '';
+    let auditCurrentPage = 1;
+    let auditTotalCount = 0;
+    let auditPageSize = 50;
+    let auditSearchDebounceTimer = null;
 
-    async function fetchAuditLogs() {
+    function onAuditSearchInput(val) {
+      auditSearchQuery = val;
+      if (auditSearchDebounceTimer) clearTimeout(auditSearchDebounceTimer);
+      auditSearchDebounceTimer = setTimeout(() => {
+        fetchAuditLogs(1);
+      }, 350);
+    }
+
+    async function fetchAuditLogs(page = 1) {
+      auditCurrentPage = page;
       const body = document.getElementById('audit-table-body');
       if (!body) return;
-      const orgId = document.getElementById('filter-audit-org').value;
-      const dateStr = document.getElementById('filter-audit-date').value;
+      const orgId = (document.getElementById('filter-audit-org') || {}).value || '';
+      const dateStr = (document.getElementById('filter-audit-date') || {}).value || '';
       
-      let params = [];
-      if (orgId) params.push(`organization_id=${orgId}`);
-      if (dateStr) params.push(`date=${dateStr}`);
-      
-      let url = '/api/audit-logs/';
-      if (params.length > 0) {
-        url += `?${params.join('&')}`;
+      let params = [`page=${page}`];
+      if (orgId) params.push(`organization_id=${encodeURIComponent(orgId)}`);
+      if (dateStr) params.push(`date=${encodeURIComponent(dateStr)}`);
+      if (auditSearchQuery && auditSearchQuery.trim()) {
+        params.push(`search=${encodeURIComponent(auditSearchQuery.trim())}`);
       }
+      
+      const url = `/api/audit-logs/?${params.join('&')}`;
       
       try {
         const data = await apiFetch(url);
-        auditItems = data;
+        if (data && typeof data === 'object' && Array.isArray(data.results)) {
+          auditItems = data.results;
+          auditTotalCount = data.count || data.results.length;
+        } else {
+          auditItems = normalizeArrayResponse(data);
+          auditTotalCount = auditItems.length;
+        }
         renderAuditLogs();
+        updateAuditPaginationUI();
       } catch (err) {
         body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444;">Failed to read audit logs: ${err.message}</td></tr>`;
       }
     }
 
+    function changeAuditPage(delta) {
+      const totalPages = Math.ceil(auditTotalCount / auditPageSize) || 1;
+      const newPage = auditCurrentPage + delta;
+      if (newPage >= 1 && newPage <= totalPages) {
+        fetchAuditLogs(newPage);
+      }
+    }
+
+    function updateAuditPaginationUI() {
+      const infoEl = document.getElementById('audit-pagination-info');
+      const pageNumEl = document.getElementById('audit-page-num');
+      const prevBtn = document.getElementById('audit-prev-btn');
+      const nextBtn = document.getElementById('audit-next-btn');
+
+      const totalPages = Math.ceil(auditTotalCount / auditPageSize) || 1;
+      const startCount = auditTotalCount === 0 ? 0 : (auditCurrentPage - 1) * auditPageSize + 1;
+      const endCount = Math.min(auditCurrentPage * auditPageSize, auditTotalCount);
+
+      if (infoEl) infoEl.textContent = `Showing ${startCount}-${endCount} of ${auditTotalCount.toLocaleString('en-IN')} logs`;
+      if (pageNumEl) pageNumEl.textContent = `Page ${auditCurrentPage} of ${totalPages}`;
+
+      if (prevBtn) prevBtn.disabled = (auditCurrentPage <= 1);
+      if (nextBtn) nextBtn.disabled = (auditCurrentPage >= totalPages);
+    }
+
     function renderAuditLogs() {
       const body = document.getElementById('audit-table-body');
       if (!body) return;
-      let filtered = auditItems;
-      if (auditSearchQuery) {
-        const q = auditSearchQuery.toLowerCase();
-        filtered = auditItems.filter(log => {
-          const name = (log.employeeName || '').toLowerCase();
-          const action = (log.action || '').toLowerCase();
-          const details = (log.details || '').toLowerCase();
-          return name.includes(q) || action.includes(q) || details.includes(q);
-        });
-      }
       
-      if (filtered.length === 0) {
+      if (auditItems.length === 0) {
         body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-light);">No audit logs matching search/filter criteria.</td></tr>`;
         return;
       }
       
       body.innerHTML = '';
-      filtered.forEach(log => {
+      auditItems.forEach(log => {
         const timestamp = new Date(log.createdAt).toLocaleString();
         const orgId = log.organization;
         const orgObj = cachedOrgs.find(o => String(o.id) === String(orgId));
@@ -2956,6 +3038,8 @@
             || (item.organization_name || '').toLowerCase().includes(q)
             || (item.details || '').toLowerCase().includes(q)
             || String(item.amount).includes(q)
+            || (item.razorpay_order_id || '').toLowerCase().includes(q)
+            || (item.razorpay_payment_id || '').toLowerCase().includes(q)
             || (item.stripe_session_id || '').toLowerCase().includes(q);
         });
       }
@@ -3016,8 +3100,9 @@
         const orgLabel = item.organization_name ? `<br><small style="color:var(--text-light);font-weight:400;">${escapeHtml(item.organization_name)}</small>` : '';
         const emailLabel = item.employee_email ? escapeHtml(item.employee_email) : 'System';
 
-        const sessionSnippet = item.stripe_session_id
-          ? `<span style="font-family:monospace;font-size:0.7rem;color:var(--text-light);" title="${escapeHtml(item.stripe_session_id)}">${escapeHtml(item.stripe_session_id.slice(0,18))}â€¦</span>`
+        const gatewayRef = item.razorpay_order_id || item.razorpay_payment_id || item.stripe_session_id;
+        const sessionSnippet = gatewayRef
+          ? `<span style="font-family:monospace;font-size:0.7rem;color:var(--text-light);" title="${escapeHtml(gatewayRef)}">${escapeHtml(gatewayRef.slice(0,18))}…</span>`
           : '';
 
         const row = document.createElement('tr');
@@ -3230,8 +3315,8 @@
     async function fetchTestimonials() {
       const body = document.getElementById('testimonials-table-body');
       try {
-        const data = await apiFetch('/api/testimonials/');
-        testimonialItems = data;
+        const rawData = await apiFetch('/api/testimonials/');
+        testimonialItems = normalizeArrayResponse(rawData);
         renderTestimonials();
       } catch (err) {
         body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444;">Failed to read testimonials: ${err.message}</td></tr>`;
@@ -3348,7 +3433,8 @@
     async function fetchFAQs() {
       const body = document.getElementById('faqs-table-body');
       try {
-        const data = await apiFetch('/api/cms/');
+        const rawData = await apiFetch('/api/cms/');
+        const data = normalizeArrayResponse(rawData);
         const faqCMSObj = data.find(c => c.key === 'faqs');
         
         if (faqCMSObj) {
@@ -3563,26 +3649,40 @@
     async function fetchGlobalDataRent() {
       try {
         const data = await apiFetch('/api/backoffice/billing-settings/');
+        const seatInput = document.getElementById('m-seat-price');
+        const attInput = document.getElementById('m-att-price');
+        const projInput = document.getElementById('m-proj-price');
         const rentInput = document.getElementById('m-rent-price');
+        if (seatInput) seatInput.value = data.employee_seat_price || '50.00';
+        if (attInput) attInput.value = data.attendance_module_price || '99.00';
+        if (projInput) projInput.value = data.tasks_module_price || '56.00';
         if (rentInput) rentInput.value = data.monthly_data_rent || '50.00';
       } catch (err) {
-        console.error('Failed to fetch data retention rent:', err);
+        console.error('Failed to fetch platform rates:', err);
       }
     }
 
     async function saveDataRetentionRent(e) {
       e.preventDefault();
+      const seatVal = parseFloat(document.getElementById('m-seat-price').value);
+      const attVal = parseFloat(document.getElementById('m-att-price').value);
+      const projVal = parseFloat(document.getElementById('m-proj-price').value);
       const rentVal = parseFloat(document.getElementById('m-rent-price').value);
-      if (isNaN(rentVal) || rentVal < 0) {
-        showNotification('Enter a valid rent price.', 'error');
+      if (isNaN(seatVal) || seatVal < 0 || isNaN(attVal) || attVal < 0 || isNaN(projVal) || projVal < 0 || isNaN(rentVal) || rentVal < 0) {
+        showNotification('Enter valid positive rates.', 'error');
         return;
       }
       try {
-        await apiFetch('/api/backoffice/billing-settings/', 'POST', { monthly_data_rent: rentVal });
-        showNotification('Monthly Data Retention Rent saved successfully!');
+        await apiFetch('/api/backoffice/billing-settings/', 'POST', {
+          employee_seat_price: seatVal,
+          attendance_module_price: attVal,
+          tasks_module_price: projVal,
+          monthly_data_rent: rentVal
+        });
+        showNotification('Platform rates saved successfully!');
         fetchGlobalDataRent();
       } catch (err) {
-        showNotification('Failed to save rent: ' + err.message, 'error');
+        showNotification('Failed to save rates: ' + err.message, 'error');
       }
     }
 

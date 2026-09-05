@@ -357,8 +357,16 @@ class ProjectViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
     def eligible_employees(self, request, pk=None):
         project = self.get_object()
         existing_user_ids = project.members.values_list('user_id', flat=True)
+        active_org = getattr(request, 'active_organization', None)
         from users.models import Employee
-        employees = Employee.objects.filter(organization=request.user.organization, is_active=True).exclude(id__in=existing_user_ids)
+        from django.db.models import Q
+        if active_org:
+            employees = Employee.objects.filter(
+                Q(organization=active_org) |
+                Q(memberships__organization=active_org, memberships__is_active_in_org=True, memberships__is_deleted=False)
+            ).exclude(id__in=existing_user_ids).distinct()
+        else:
+            employees = Employee.objects.none()
         data = [{
             'id': emp.id,
             'user_id': emp.id,
@@ -379,13 +387,18 @@ class ProjectViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
                 has_fine_grained_permission(request.user, 'admin:employees')):
             return Response({'detail': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
-        if not request.user.organization and not (request.user.is_superuser or getattr(request.user, 'isSuperAdmin', False)):
+        active_org = getattr(request, 'active_organization', None)
+        if not active_org and not (request.user.is_superuser or getattr(request.user, 'isSuperAdmin', False)):
             return Response([], status=status.HTTP_200_OK)
 
         from users.models import Employee
+        from django.db.models import Q
         qs = Employee.objects.filter(is_active=True)
-        if request.user.organization:
-            qs = qs.filter(organization=request.user.organization)
+        if active_org:
+            qs = qs.filter(
+                Q(organization=active_org) |
+                Q(memberships__organization=active_org, memberships__is_active_in_org=True, memberships__is_deleted=False)
+            ).distinct()
 
         search = request.query_params.get('search', '').strip()
         if search:

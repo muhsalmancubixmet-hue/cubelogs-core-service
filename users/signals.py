@@ -15,10 +15,8 @@ from users.models import Employee
 from subscribers.models import SubscriberAccount
 from users.api.v1.services import UserService
 
-@receiver(post_save, sender=Employee)
-def send_employee_registration_email_signal(sender, instance, created, **kwargs):
-    if created:
-        UserService.send_welcome_email(instance)
+# Note: Generic welcome email signal disabled to avoid duplicate emails during administrative onboarding.
+# Administrative employee creation explicitly dispatches single onboarding credential email.
 
 @receiver(post_delete, sender=Employee)
 def cleanup_subscriber_account_on_employee_delete(sender, instance, **kwargs):

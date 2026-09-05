@@ -2,10 +2,23 @@ import os
 import sys
 import re
 import json
-import stripe
-import stripe.error
+import razorpay
 from decimal import Decimal
 from datetime import timedelta
+
+import logging
+logger = logging.getLogger(__name__)
+
+def get_razorpay_client():
+    key_id = os.environ.get('RAZORPAY_KEY_ID') or getattr(dj_settings, 'RAZORPAY_KEY_ID', None)
+    key_secret = os.environ.get('RAZORPAY_KEY_SECRET') or getattr(dj_settings, 'RAZORPAY_KEY_SECRET', None)
+    if not key_id or not key_secret or key_id.startswith('rzp_test_mock_'):
+        return None, key_id, key_secret
+    try:
+        client = razorpay.Client(auth=(key_id, key_secret))
+        return client, key_id, key_secret
+    except Exception:
+        return None, key_id, key_secret
 
 from django.utils import timezone
 from django.conf import settings as dj_settings
@@ -14,13 +27,17 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from rest_framework import viewsets, status, permissions
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from core.permissions import HasRequiredPermission, IsSuperAdminUser
 from core.mixins import FilterMixinNew
-from subscribers.models import SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction, Coupon, BackofficeCoupon, GlobalBillingSettings, default_coupon_code
+from subscribers.models import (
+    SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction,
+    MonthlyInvoice, Coupon, BackofficeCoupon, GlobalBillingSettings, default_coupon_code
+)
 from subscribers.filters import SubscriptionPackageFilter, SubscriberAccountFilter, CouponFilter, BackofficeCouponFilter
 from subscribers.api.v1.serializers import (
     SubscriptionPackageSerializer, SubscriberAccountSerializer,
@@ -58,6 +75,12 @@ class SubscriptionPackageViewSet(FilterMixinNew, viewsets.ModelViewSet):
                 self.perform_update(serializer)
                 return Response(serializer.data, status=status.HTTP_200_OK)
         return super().create(request, *args, **kwargs)
+
+    def perform_update(self, serializer):
+        serializer.save()
+
+    def perform_create(self, serializer):
+        serializer.save()
 
 
 # --------------------------------------------------------------------------------
@@ -113,7 +136,7 @@ class SubscriberAccountViewSet(FilterMixinNew, viewsets.ModelViewSet):
 
 
 # --------------------------------------------------------------------------------
-# DynamicCheckoutView: API view generating Stripe payment checkout session URLs dynamically.
+# DynamicCheckoutView: API view generating Razorpay payment checkout orders dynamically.
 # --------------------------------------------------------------------------------
 class DynamicCheckoutView(APIView):
     permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
@@ -174,66 +197,55 @@ class DynamicCheckoutView(APIView):
                 status='Success',
                 details=f"Core plan activated with {employee_count} employees (0 paid addons)"
             )
-            return Response({'checkoutUrl': '/admin/settings?tab=billing&status=success'}, status=status.HTTP_200_OK)
+            return Response({'status': 'subscription_success', 'message': 'Core plan activated successfully!'}, status=status.HTTP_200_OK)
 
-        from dotenv import load_dotenv
-        dotenv_path = os.path.join(str(dj_settings.BASE_DIR), '.env')
-        load_dotenv(dotenv_path, override=True)
-        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(dj_settings, 'STRIPE_SECRET_KEY', None)
-        if not stripe.api_key:
-            stripe.api_key = "sk_test_fake_secret_key"
+        client, key_id, _ = get_razorpay_client()
+        allow_mock = getattr(dj_settings, 'ALLOW_MOCK_PAYMENTS', False) or getattr(dj_settings, 'DEBUG', False)
+        import uuid
 
-        frontend_url = dj_settings.FRONTEND_URL
+        if not client:
+            if not allow_mock:
+                return Response({'error': 'Razorpay payment gateway is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        is_testing = 'test' in sys.argv
-        is_fake_stripe = stripe.api_key == "sk_test_fake_secret_key"
-        if is_fake_stripe and not is_testing:
-            settings.max_employees_allowed = employee_count
-            settings.is_attendance_enabled = 'attendance' in addons
-            settings.is_project_enabled = 'project' in addons
-            settings.subscriptionDays = 30
-            settings.subscriptionStatus = 'Active'
-            settings.subscriptionExpiresAt = timezone.now() + timedelta(minutes=5)
-            settings.save()
-
+            mock_order_id = f"mock_rzp_order_{uuid.uuid4().hex}"
             wallet, _ = Wallet.objects.get_or_create(employee=user, defaults={'organization': org})
             WalletTransaction.objects.create(
                 wallet=wallet,
                 amount=Decimal(str(total_cost)),
                 transactionType='Debit',
-                success=True,
-                status='Success',
-                details=f"Local/Debug dynamic subscription activated: {employee_count} employees (Addons: {', '.join(addons)})"
+                success=False,
+                razorpay_order_id=mock_order_id,
+                status='Pending',
+                details=f"Pending dynamic subscription activation: {employee_count} employees (Addons: {', '.join(addons)})"
             )
-            return Response({'checkoutUrl': f"{frontend_url}/admin/settings?tab=billing&status=success"}, status=status.HTTP_200_OK)
+
+            return Response({
+                'gateway': 'razorpay',
+                'key_id': key_id or 'rzp_test_mock',
+                'order_id': mock_order_id,
+                'amount': int(total_cost * 100),
+                'currency': 'INR',
+                'name': 'CubeLogs',
+                'description': f"Dynamic Subscription Plan ({employee_count} employees)",
+                'payment_type': 'subscription',
+                'is_mock': True
+            }, status=status.HTTP_200_OK)
 
         try:
-            session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price_data': {
-                        'currency': 'inr',
-                        'product_data': {
-                            'name': 'CubeLogs Dynamic Subscription Plan',
-                            'description': f"SaaS Workspace Activation for {employee_count} employees (Addons: {', '.join(addons)})",
-                        },
-                        'unit_amount': total_cost * 100,
-                    },
-                    'quantity': 1,
-                }],
-                mode='payment',
-                success_url=f"{frontend_url}/admin/settings?tab=billing&status=success&session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url=f"{frontend_url}/admin/settings?tab=billing&status=cancel",
-                client_reference_id=str(user.id),
-                customer_email=user.email,
-                metadata={
-                    'type': 'dynamic_subscription',
+            order_data = {
+                'amount': int(total_cost * 100),
+                'currency': 'INR',
+                'receipt': f"rcpt_sub_{uuid.uuid4().hex[:12]}",
+                'notes': {
+                    'payment_type': 'subscription',
+                    'org_id': str(org.id),
+                    'user_id': str(user.id),
                     'employee_count': str(employee_count),
                     'addons': ','.join(addons),
-                    'org_id': str(org.id),
                     'total_cost': str(total_cost)
                 }
-            )
+            }
+            order = client.order.create(data=order_data)
 
             wallet, _ = Wallet.objects.get_or_create(employee=user, defaults={'organization': org})
             WalletTransaction.objects.create(
@@ -241,197 +253,257 @@ class DynamicCheckoutView(APIView):
                 amount=Decimal(str(total_cost)),
                 transactionType='Debit',
                 success=False,
-                stripe_session_id=session.id,
+                razorpay_order_id=order['id'],
                 status='Pending',
                 details=f"Pending dynamic subscription activation: {employee_count} employees (Addons: {', '.join(addons)})"
             )
 
-            return Response({'checkoutUrl': session.url}, status=status.HTTP_200_OK)
+            return Response({
+                'gateway': 'razorpay',
+                'key_id': key_id,
+                'order_id': order['id'],
+                'amount': order['amount'],
+                'currency': 'INR',
+                'name': 'CubeLogs',
+                'description': f"Dynamic Subscription Plan ({employee_count} employees)",
+                'payment_type': 'subscription'
+            }, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({'error': f"Failed to initiate Stripe checkout: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f"Failed to initiate Razorpay checkout: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+from rest_framework.authentication import SessionAuthentication
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+class CsrfExemptSessionAuthentication(SessionAuthentication):
+    def enforce_csrf(self, request):
+        return None
+
+# --------------------------------------------------------------------------------
+# VerifyPaymentView: Generic API view verifying Razorpay payment signatures & completing billing transactions.
+# --------------------------------------------------------------------------------
+class VerifyPaymentView(APIView):
+    authentication_classes = [JWTAuthentication, CsrfExemptSessionAuthentication]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        import uuid
+        razorpay_order_id = request.data.get('razorpay_order_id')
+        razorpay_payment_id = request.data.get('razorpay_payment_id')
+        razorpay_signature = request.data.get('razorpay_signature')
+        payment_type = request.data.get('payment_type', 'wallet')
+
+        if not razorpay_order_id:
+            return Response({'error': 'Razorpay order ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        allow_mock = getattr(dj_settings, 'ALLOW_MOCK_PAYMENTS', False) or getattr(dj_settings, 'DEBUG', False) or getattr(dj_settings, 'TEST_MODE', False) or ('test' in sys.argv)
+        is_mock_order = razorpay_order_id.startswith('mock_')
+
+        active_org = getattr(request, 'active_organization', None)
+        if not active_org:
+            return Response({'error': 'Active organization context required for payment verification.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+        from users.models import OrganizationMembership
+        active_mem = getattr(request, 'active_membership', None)
+        if not active_mem and user.is_authenticated:
+            active_mem = OrganizationMembership.objects.filter(
+                user=user,
+                organization=active_org,
+                is_active_in_org=True,
+                is_deleted=False
+            ).first()
+
+        has_org_match = (active_mem is not None) or (getattr(user, 'organization_id', None) == getattr(active_org, 'id', None))
+        if not has_org_match and not (getattr(user, 'isSuperAdmin', False) and getattr(user, 'organization', None) is None):
+            return Response({'error': 'Active membership in organization required for payment verification.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Enforce PAYMENT ORGANIZATION == ACTIVE ORGANIZATION
+        tx_check = WalletTransaction.objects.filter(razorpay_order_id=razorpay_order_id).select_related('wallet__organization').first()
+        if tx_check and tx_check.wallet and tx_check.wallet.organization_id:
+            if tx_check.wallet.organization_id != active_org.id:
+                return Response({'error': 'Payment order does not belong to active organization.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if is_mock_order:
+            if not allow_mock:
+                return Response({'error': 'Mock payment sessions are disabled in production'}, status=status.HTTP_400_BAD_REQUEST)
+
+            mock_status = request.data.get('payment_status') or 'captured'
+            if mock_status == 'authorized':
+                return Response({
+                    'status': 'payment_authorized',
+                    'message': 'Payment is authorized and pending capture. Wallet will be credited once capture is confirmed.'
+                }, status=status.HTTP_202_ACCEPTED)
+            if mock_status not in ['captured']:
+                return Response({'error': f"Payment status invalid: {mock_status}"}, status=status.HTTP_400_BAD_REQUEST)
+
+            if request.data.get('currency') and request.data.get('currency') != 'INR':
+                return Response({'error': 'Currency mismatch. Expected INR.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            tx_check_amt = WalletTransaction.objects.filter(razorpay_order_id=razorpay_order_id).first()
+            if request.data.get('amount') and tx_check_amt:
+                req_paise = int(Decimal(str(request.data.get('amount'))) * Decimal('100.0'))
+                expected_paise = int(Decimal(str(tx_check_amt.amount)) * Decimal('100.0'))
+                if req_paise != expected_paise:
+                    return Response({'error': 'Payment amount does not match stored transaction amount.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if payment_type == 'wallet' or 'wallet' in razorpay_order_id or 'topup' in razorpay_order_id:
+                wallet = Wallet.objects.filter(organization=active_org).first()
+                if not wallet:
+                    wallet = Wallet.objects.create(employee=request.user, organization=active_org, balance=Decimal('0.00'))
+
+                tx = WalletTransaction.objects.filter(razorpay_order_id=razorpay_order_id).first()
+                deposit_amount = tx.amount if tx else Decimal('1000.00')
+
+                from company.api.v1.services import BillingService
+                BillingService.credit_wallet_from_payment(
+                    wallet_id=wallet.id,
+                    amount_dec=deposit_amount,
+                    razorpay_order_id=razorpay_order_id,
+                    razorpay_payment_id=razorpay_payment_id or f"mock_pay_{uuid.uuid4().hex[:10]}",
+                    razorpay_signature=razorpay_signature or "mock_signature",
+                    details=tx.details if tx else "Mock Prepaid Wallet Deposit",
+                    target_org_id=active_org.id
+                )
+                return Response({'status': 'wallet_success', 'message': 'Mock Wallet top-up confirmed!'}, status=status.HTTP_200_OK)
+            else:
+                org = active_org
+                if org and org.settings:
+                    org.settings.max_employees_allowed = 50
+                    org.settings.is_attendance_enabled = True
+                    org.settings.is_project_enabled = True
+                    org.settings.subscriptionDays = 30
+                    org.settings.subscriptionStatus = 'Active'
+                    org.settings.save()
+
+                tx = WalletTransaction.objects.filter(razorpay_order_id=razorpay_order_id).first()
+                if tx:
+                    tx.status = 'Success'
+                    tx.success = True
+                    tx.razorpay_payment_id = razorpay_payment_id or "mock_payment"
+                    tx.razorpay_signature = razorpay_signature or "mock_signature"
+                    tx.save()
+
+                return Response({'status': 'subscription_success', 'message': 'Mock Subscription confirmed successfully!'}, status=status.HTTP_200_OK)
+
+        if not razorpay_payment_id or not razorpay_signature:
+            return Response({'error': 'Razorpay payment ID and signature are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        client, key_id, key_secret = get_razorpay_client()
+        if not client:
+            return Response({'error': 'Razorpay payment gateway is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            client.utility.verify_payment_signature({
+                'razorpay_order_id': razorpay_order_id,
+                'razorpay_payment_id': razorpay_payment_id,
+                'razorpay_signature': razorpay_signature
+            })
+        except Exception as se:
+            return Response({'error': f'Payment signature verification failed: {str(se)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            payment_info = client.payment.fetch(razorpay_payment_id)
+            if payment_info.get('order_id') != razorpay_order_id:
+                return Response({'error': 'Order ID mismatch'}, status=status.HTTP_400_BAD_REQUEST)
+            if payment_info.get('currency') != 'INR':
+                return Response({'error': 'Currency mismatch'}, status=status.HTTP_400_BAD_REQUEST)
+
+            pay_status = payment_info.get('status')
+            if pay_status != 'captured':
+                if pay_status == 'authorized':
+                    logger.info("Payment %s is authorized but not yet captured. Waiting for capture.", razorpay_payment_id)
+                    return Response({
+                        'status': 'payment_authorized',
+                        'message': 'Payment is authorized and pending capture. Wallet will be credited automatically once capture is confirmed.'
+                    }, status=status.HTTP_202_ACCEPTED)
+                return Response({'error': f"Payment status invalid: {pay_status}"}, status=status.HTTP_400_BAD_REQUEST)
+
+            order_info = client.order.fetch(razorpay_order_id)
+            if order_info.get('currency') != 'INR':
+                return Response({'error': 'Order currency mismatch'}, status=status.HTTP_400_BAD_REQUEST)
+
+            pay_amount = int(payment_info.get('amount') or 0)
+            order_amount = int(order_info.get('amount') or 0)
+            if pay_amount != order_amount:
+                logger.warning("AMOUNT_MISMATCH: payment %s != order %s", pay_amount, order_amount)
+                return Response({'error': 'Payment amount does not match order amount.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            tx_pending = WalletTransaction.objects.filter(razorpay_order_id=razorpay_order_id).first()
+            if tx_pending:
+                expected_paise = int((Decimal(str(tx_pending.amount)) * Decimal('100.0')).to_integral_value())
+                if pay_amount != expected_paise:
+                    logger.warning("AMOUNT_MISMATCH: payment %s != expected %s", pay_amount, expected_paise)
+                    return Response({'error': 'Payment amount does not match stored transaction amount.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            order_notes = payment_info.get('notes', {}) or order_info.get('notes', {}) or {}
+            order_org_id = order_notes.get('org_id')
+            if order_org_id and str(order_org_id) != str(active_org.id):
+                return Response({'error': 'Payment order does not belong to active organization.'}, status=status.HTTP_403_FORBIDDEN)
+        except Exception as pe:
+            return Response({'error': f'Failed to fetch payment details: {str(pe)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if payment_type == 'wallet' or (tx_pending and tx_pending.transactionType == 'Credit'):
+            wallet = Wallet.objects.filter(organization=active_org).first()
+            if not wallet:
+                wallet = Wallet.objects.create(employee=request.user, organization=active_org, balance=Decimal('0.00'))
+
+            amount_dec = tx_pending.amount if tx_pending else (Decimal(str(payment_info.get('amount', 0))) / Decimal('100.0'))
+
+            from company.api.v1.services import BillingService
+            BillingService.credit_wallet_from_payment(
+                wallet_id=wallet.id,
+                amount_dec=amount_dec,
+                razorpay_order_id=razorpay_order_id,
+                razorpay_payment_id=razorpay_payment_id,
+                razorpay_signature=razorpay_signature,
+                details=f"Prepaid Wallet Deposit (Razorpay Order {razorpay_order_id[:12]})",
+                target_org_id=active_org.id
+            )
+            return Response({'status': 'wallet_success', 'message': 'Wallet top-up confirmed!'}, status=status.HTTP_200_OK)
+
+        elif payment_type == 'subscription' or (tx_pending and tx_pending.transactionType == 'Debit'):
+            org = active_org
+            if org and org.settings:
+                notes = payment_info.get('notes', {}) or {}
+                emp_count = int(notes.get('employee_count') or 10)
+                addons_str = notes.get('addons') or ''
+                addons = [a.strip() for a in addons_str.split(',') if a.strip()]
+
+                org.settings.max_employees_allowed = emp_count
+                org.settings.is_attendance_enabled = 'attendance' in addons
+                org.settings.is_project_enabled = 'project' in addons
+                org.settings.subscriptionDays = 30
+                org.settings.subscriptionStatus = 'Active'
+                org.settings.save()
+
+            if tx_pending:
+                tx_pending.status = 'Success'
+                tx_pending.success = True
+                tx_pending.razorpay_payment_id = razorpay_payment_id
+                tx_pending.razorpay_signature = razorpay_signature
+                tx_pending.save()
+
+            return Response({'status': 'subscription_success', 'message': 'Subscription confirmed successfully!'}, status=status.HTTP_200_OK)
+
+        return Response({'error': 'Unknown payment type'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # --------------------------------------------------------------------------------
-# ConfirmSubscriptionView: API view confirming successful deposits or checkout session fulfillments.
+# ConfirmSubscriptionView: Backward compatibility view delegating to VerifyPaymentView logic.
 # --------------------------------------------------------------------------------
 class ConfirmSubscriptionView(APIView):
     permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
     required_permission = 'settings:billing'
 
     def post(self, request):
-        session_id = request.data.get('session_id')
+        session_id = request.data.get('session_id') or request.data.get('razorpay_order_id')
         if not session_id:
-            return Response({'error': 'Session ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Session or Order ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        stripe_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(dj_settings, 'STRIPE_SECRET_KEY', None)
-        is_dev_env = getattr(dj_settings, 'is_dev', False) or getattr(dj_settings, 'TEST_MODE', False)
-        allow_mock = is_dev_env and getattr(dj_settings, 'ALLOW_MOCK_PAYMENTS', False)
-
-        if not stripe_key:
-            if not allow_mock:
-                return Response({'error': 'Stripe payment gateway is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            stripe_key = "sk_test_fake_secret_key"
-        stripe.api_key = stripe_key
-
-        if not allow_mock and (session_id in ["get", "{CHECKOUT_SESSION_ID}", "test_session_id"] or session_id.startswith("mock_")):
-            return Response({'error': 'Mock payment sessions are disabled in production'}, status=status.HTTP_400_BAD_REQUEST)
-
-        is_mock_session = allow_mock and (session_id in ["get", "{CHECKOUT_SESSION_ID}", "test_session_id"] or session_id.startswith("mock_") or stripe.api_key == "sk_test_fake_secret_key")
-
-        if is_mock_session:
-            if "topup" in session_id or "wallet" in session_id:
-                wallet, _ = Wallet.objects.get_or_create(
-                    employee=request.user,
-                    defaults={'organization': request.user.organization, 'balance': Decimal('0.00')}
-                )
-
-                transaction = WalletTransaction.objects.filter(stripe_session_id=session_id).first()
-                deposit_amount = Decimal('1000.00')
-                if transaction:
-                    deposit_amount = transaction.amount
-
-                try:
-                    current_balance = Decimal(str(wallet.balance))
-                except Exception:
-                    current_balance = Decimal('0.00')
-                wallet.balance = current_balance + deposit_amount
-                wallet.save()
-
-                if transaction:
-                    transaction.status = 'Success'
-                    transaction.success = True
-                    transaction.save()
-                else:
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        amount=deposit_amount,
-                        transactionType='Credit',
-                        success=True,
-                        stripe_session_id=session_id,
-                        status='Success',
-                        details="Mock Prepaid Wallet Deposit"
-                    )
-                return Response({'status': 'wallet_success', 'message': 'Mock Wallet top-up confirmed!'}, status=status.HTTP_200_OK)
-            else:
-                org = request.user.organization
-                if not org:
-                    org, _ = Organization.objects.get_or_create(name="Mock Organization", defaults={'subdomain': 'mock'})
-                    request.user.organization = org
-                    request.user.save()
-
-                settings = org.settings
-                if not settings:
-                    settings = OrgSettings.objects.create()
-                    org.settings = settings
-                    org.save()
-
-                settings.max_employees_allowed = 50
-                settings.is_attendance_enabled = True
-                settings.is_project_enabled = True
-                settings.subscriptionDays = 30
-                settings.subscriptionStatus = 'Active'
-                settings.subscriptionExpiresAt = timezone.now() + timedelta(minutes=5)
-                settings.save()
-
-                transaction = WalletTransaction.objects.filter(stripe_session_id=session_id).first()
-                if transaction:
-                    transaction.status = 'Success'
-                    transaction.success = True
-                    transaction.save()
-                else:
-                    wallet, _ = Wallet.objects.get_or_create(employee=request.user, defaults={'organization': org})
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        amount=Decimal('0.00'),
-                        transactionType='Debit',
-                        success=True,
-                        stripe_session_id=session_id,
-                        status='Success',
-                        details="Mock dynamic subscription activated: 50 employees"
-                    )
-                return Response({'status': 'subscription_success', 'message': 'Mock Subscription confirmed successfully!'}, status=status.HTTP_200_OK)
-
-        try:
-            session = stripe.checkout.Session.retrieve(session_id)
-            if session.payment_status != 'paid':
-                return Response({'error': 'Payment has not been completed'}, status=status.HTTP_400_BAD_REQUEST)
-
-            metadata = session.metadata or {}
-            if hasattr(metadata, 'to_dict'):
-                metadata = metadata.to_dict()
-            else:
-                metadata = dict(metadata)
-
-            if metadata.get('type') != 'dynamic_subscription':
-                if metadata.get('type') == 'topup':
-                    wallet_id = metadata.get('wallet_id')
-                    try:
-                        amount = Decimal(metadata.get('amount') or '0')
-                    except Exception:
-                        amount = Decimal('0.00')
-
-                    wallet = Wallet.objects.get(id=wallet_id)
-                    transaction = WalletTransaction.objects.filter(stripe_session_id=session_id).first()
-                    if transaction and transaction.status == 'Pending':
-                        transaction.status = 'Success'
-                        transaction.success = True
-                        transaction.save()
-
-                        try:
-                            current_balance = Decimal(str(wallet.balance))
-                        except Exception:
-                            current_balance = Decimal('0.00')
-                        wallet.balance = current_balance + amount
-                        wallet.save()
-                    return Response({'status': 'wallet_success', 'message': 'Wallet top-up confirmed!'}, status=status.HTTP_200_OK)
-                return Response({'error': 'Invalid checkout session type'}, status=status.HTTP_400_BAD_REQUEST)
-
-            org_id = metadata.get('org_id')
-            employee_count = int(metadata.get('employee_count') or 10)
-            addons_str = metadata.get('addons') or ''
-            addons = [a.strip() for a in addons_str.split(',') if a.strip()]
-            try:
-                total_cost = Decimal(metadata.get('total_cost') or '0')
-            except Exception:
-                total_cost = Decimal('0.00')
-
-            org = Organization.objects.get(id=org_id)
-            settings = org.settings
-            if not settings:
-                settings = OrgSettings.objects.create()
-                org.settings = settings
-                org.save()
-
-            settings.max_employees_allowed = employee_count
-            settings.is_attendance_enabled = 'attendance' in addons
-            settings.is_project_enabled = 'project' in addons
-            settings.subscriptionDays = 30
-            settings.subscriptionStatus = 'Active'
-            settings.subscriptionExpiresAt = timezone.now() + timedelta(minutes=5)
-            settings.save()
-
-            transaction = WalletTransaction.objects.filter(stripe_session_id=session_id).first()
-            if transaction and transaction.status == 'Pending':
-                transaction.status = 'Success'
-                transaction.success = True
-                transaction.details = f"Dynamic subscription activated: {employee_count} employees (Addons: {', '.join(addons)})"
-                transaction.save()
-            elif not transaction:
-                wallet, _ = Wallet.objects.get_or_create(employee=request.user, defaults={'organization': org})
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=total_cost,
-                    transactionType='Debit',
-                    success=True,
-                    stripe_session_id=session_id,
-                    status='Success',
-                    details=f"Dynamic subscription activated: {employee_count} employees (Addons: {', '.join(addons)})"
-                )
-
-            return Response({'status': 'subscription_success', 'message': 'Subscription confirmed successfully!'}, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response({'error': f"Confirmation failed: {str(e)}'"}, status=status.HTTP_400_BAD_REQUEST)
+        request.data['razorpay_order_id'] = session_id
+        verify_view = VerifyPaymentView()
+        return verify_view.post(request)
 
 
 # --------------------------------------------------------------------------------
@@ -472,7 +544,8 @@ class BackofficeRegisterCompanyView(APIView):
         name_parts = admin_full_name.split(' ', 1)
         admin_first_name = name_parts[0]
         admin_last_name = name_parts[1] if len(name_parts) > 1 else ''
-        admin_password = "Welcome@123"
+        from core.utils import generate_secure_password
+        admin_password = generate_secure_password(14)
 
         try:
             org = Organization.objects.create(name=company_name, subdomain=subdomain)
@@ -620,316 +693,154 @@ The CubeLogs Team
 
 @csrf_exempt
 @require_POST
-def stripe_webhook(request):
-    payload = request.body
-    sig_header = request.META.get('HTTP_STRIPE_SIGNATURE')
+def razorpay_webhook(request):
+    raw_body = request.body
+    payload = raw_body.decode('utf-8')
+    sig_header = request.META.get('HTTP_X_RAZORPAY_SIGNATURE')
 
-    endpoint_secret = getattr(dj_settings, 'STRIPE_WEBHOOK_SECRET', None)
-    if not endpoint_secret:
-        endpoint_secret = os.environ.get('STRIPE_WEBHOOK_SECRET')
+    webhook_secret = getattr(dj_settings, 'RAZORPAY_WEBHOOK_SECRET', None) or os.environ.get('RAZORPAY_WEBHOOK_SECRET')
+    client, key_id, key_secret = get_razorpay_client()
 
-    from dotenv import load_dotenv
-    dotenv_path = os.path.join(str(dj_settings.BASE_DIR), '.env')
-    load_dotenv(dotenv_path, override=True)
-    stripe.api_key = os.environ.get('STRIPE_SECRET_KEY') or getattr(dj_settings, 'STRIPE_SECRET_KEY', None)
+    # Reject missing signature header immediately
+    if not sig_header:
+        logger.warning("Razorpay webhook rejected: missing HTTP_X_RAZORPAY_SIGNATURE")
+        return HttpResponse("Missing signature", status=400)
+
+    if not webhook_secret or not client:
+        logger.error("Razorpay webhook secret or client not configured")
+        return HttpResponse("Webhook unconfigured", status=500)
 
     try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, endpoint_secret
-        )
-    except ValueError:
-        return HttpResponse(status=400)
-    except stripe.error.SignatureVerificationError:
-        return HttpResponse(status=400)
+        client.utility.verify_webhook_signature(payload, sig_header, webhook_secret)
+    except Exception as exc:
+        logger.warning("Razorpay webhook signature verification failed: %s", exc)
+        return HttpResponse("Invalid signature", status=400)
+
+    try:
+        data = json.loads(payload)
     except Exception:
-        return HttpResponse(status=400)
+        return HttpResponse("Invalid payload", status=400)
 
-    event_type = event.get('type')
-    data_object = event.get('data', {}).get('object', {})
-    event_id = event.get('id')
+    event_type = data.get('event')
+    event_id = str(data.get('id') or data.get('account_id') or data.get('created_at') or '')
 
-    # Idempotency check
-    if WalletTransaction.objects.filter(stripeEventId=event_id).exists():
+    # Authorized-only event must not credit wallet
+    if event_type == 'payment.authorized':
+        logger.info("Webhook received payment.authorized. Payment is not yet captured; no wallet credit.")
+        return HttpResponse("Payment authorized, pending capture", status=200)
+
+    if event_type not in ['payment.captured', 'order.paid']:
         return HttpResponse(status=200)
 
-    if event_type == 'checkout.session.completed':
-        session_id = data_object.get('id')
-        customer_id = data_object.get('customer')
-        customer_email = data_object.get('customer_email') or data_object.get('customer_details', {}).get('email')
-        mode = data_object.get('mode')
-        metadata = data_object.get('metadata', {})
+    if event_id and WalletTransaction.objects.filter(gateway_event_id=event_id, success=True).exists():
+        return HttpResponse("Event already processed", status=200)
 
-        if metadata.get('type') == 'dynamic_subscription':
-            org_id = metadata.get('org_id')
-            employee_count = int(metadata.get('employee_count', 10))
-            addons_str = metadata.get('addons', '')
-            addons = [a.strip() for a in addons_str.split(',') if a.strip()]
-            total_cost = Decimal(metadata.get('total_cost', '0'))
+    payload_payment = data.get('payload', {}).get('payment', {}).get('entity', {})
+    payload_order = data.get('payload', {}).get('order', {}).get('entity', {})
+    payload_entity = payload_payment or payload_order
 
+    # For payment.captured, verify status is explicitly 'captured'
+    if payload_payment and payload_payment.get('status') != 'captured':
+        logger.warning("Webhook received payment entity with non-captured status: %s", payload_payment.get('status'))
+        return HttpResponse("Non-captured payment", status=200)
+
+    order_id = payload_entity.get('order_id') or (payload_order.get('id') if payload_order else None)
+    payment_id = payload_payment.get('id') if payload_payment else None
+    notes = payload_payment.get('notes', {}) or payload_order.get('notes', {}) or {}
+    payment_type = notes.get('payment_type')
+
+    # Currency validation
+    currency = payload_entity.get('currency')
+    if currency and currency != 'INR':
+        logger.warning("Webhook currency mismatch: %s", currency)
+        return HttpResponse("Currency mismatch", status=400)
+
+    if order_id:
+        tx = WalletTransaction.objects.filter(razorpay_order_id=order_id).select_related('wallet__organization').first()
+        if tx and tx.success:
+            return HttpResponse("Already processed", status=200)
+
+        amount_paise = int(payload_entity.get('amount') or 0)
+        amount_dec = (Decimal(str(amount_paise)) / Decimal('100.0')).quantize(Decimal('0.01'))
+
+        # Invariant: if stored transaction exists, amount must match
+        if tx:
+            expected_paise = int((Decimal(str(tx.amount)) * Decimal('100.0')).to_integral_value())
+            if amount_paise != expected_paise:
+                logger.warning("WEBHOOK_AMOUNT_MISMATCH: received %s != expected %s", amount_paise, expected_paise)
+                return HttpResponse("Amount mismatch", status=400)
+
+        # Organization & Wallet ownership validation from notes vs tx
+        note_org_id = notes.get('org_id')
+        note_wallet_id = notes.get('wallet_id')
+        if tx and tx.wallet:
+            if note_org_id and str(note_org_id) != str(tx.wallet.organization_id):
+                logger.warning("WEBHOOK_TENANT_MISMATCH: note org %s != tx org %s", note_org_id, tx.wallet.organization_id)
+                return HttpResponse("Tenant mismatch", status=403)
+            if note_wallet_id and str(note_wallet_id) != str(tx.wallet_id):
+                logger.warning("WEBHOOK_WALLET_MISMATCH: note wallet %s != tx wallet %s", note_wallet_id, tx.wallet_id)
+                return HttpResponse("Wallet mismatch", status=403)
+
+        if payment_type == 'wallet' or (tx and tx.transactionType == 'Credit'):
+            wallet_id = note_wallet_id or (tx.wallet_id if tx else None)
+            target_org_id = note_org_id or (tx.wallet.organization_id if tx and tx.wallet else None)
+            bonus_amount_str = notes.get('bonus_amount', '0.00')
+            coupon_code = notes.get('coupon_code')
             try:
-                org = Organization.objects.get(id=org_id)
-                org_settings = org.settings
-                if not org_settings:
-                    org_settings = OrgSettings.objects.create()
-                    org.settings = org_settings
-                    org.save()
+                bonus_amount = Decimal(bonus_amount_str)
+            except Exception:
+                bonus_amount = Decimal('0.00')
 
-                org_settings.max_employees_allowed = employee_count
-                org_settings.is_attendance_enabled = 'attendance' in addons
-                org_settings.is_project_enabled = 'project' in addons
-                org_settings.subscriptionDays = 30
-                org_settings.save()
-
-                transaction = WalletTransaction.objects.filter(stripe_session_id=session_id, status='Pending').first()
-                if transaction:
-                    transaction.status = 'Success'
-                    transaction.success = True
-                    transaction.stripeEventId = event_id
-                    transaction.details = f"Dynamic subscription activated: {employee_count} employees (Addons: {', '.join(addons)})"
-                    transaction.receipt_url = data_object.get('hosted_invoice_url') or data_object.get('invoice_pdf')
-                    transaction.save()
-                else:
-                    superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-                    if superadmin:
-                        wallet, _ = Wallet.objects.get_or_create(employee=superadmin, defaults={'organization': org})
-                        if customer_id and not wallet.stripe_customer_id:
-                            wallet.stripe_customer_id = customer_id
-                            wallet.save()
-                        WalletTransaction.objects.create(
-                            wallet=wallet,
-                            amount=total_cost,
-                            transactionType='Debit',
-                            success=True,
-                            stripeEventId=event_id,
-                            stripe_session_id=session_id,
-                            status='Success',
-                            details=f"Dynamic subscription activated: {employee_count} employees (Addons: {', '.join(addons)})",
-                            receipt_url=data_object.get('hosted_invoice_url') or data_object.get('invoice_pdf')
-                        )
-            except Organization.DoesNotExist:
-                print(f"Organization ID {org_id} not found in dynamic subscription checkout webhook")
-
-        elif mode == 'payment':
-            # Prepaid top-up
-            transaction = WalletTransaction.objects.filter(stripe_session_id=session_id, status='Pending').first()
-            coupon_code = metadata.get('coupon_code')
-            bonus_amount_str = metadata.get('bonus_amount', '0.00')
-            bonus_amount = Decimal(bonus_amount_str)
-
-            if transaction:
-                wallet = transaction.wallet
-                amount = transaction.amount
-
-                transaction.status = 'Success'
-                transaction.success = True
-                transaction.stripeEventId = event_id
-                transaction.details = "Wallet Top-up via Stripe"
-                transaction.save()
-
-                wallet.balance = Decimal(str(wallet.balance)) + amount + bonus_amount
-                if customer_id and not wallet.stripe_customer_id:
-                    wallet.stripe_customer_id = customer_id
-                wallet.save()
-
-                if coupon_code and bonus_amount > 0:
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        amount=bonus_amount,
-                        transactionType='Credit',
-                        success=True,
-                        stripeEventId=event_id,
-                        stripe_session_id=session_id,
-                        status='Success',
-                        details=f"Promotional Coupon Bonus - {coupon_code}"
-                    )
-            elif customer_email:
-                employee = Employee.objects.filter(email=customer_email).first()
-                if employee:
-                    wallet, _ = Wallet.objects.get_or_create(employee=employee, defaults={'organization': employee.organization})
-                    amount = Decimal(str(data_object.get('amount_total', 0))) / Decimal('100.0')
-                    wallet.balance = Decimal(str(wallet.balance)) + amount + bonus_amount
-                    if customer_id and not wallet.stripe_customer_id:
-                        wallet.stripe_customer_id = customer_id
-                    wallet.save()
-
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        amount=amount,
-                        transactionType='Credit',
-                        success=True,
-                        stripeEventId=event_id,
-                        stripe_session_id=session_id,
-                        status='Success',
-                        details="Wallet Top-up via Stripe"
-                    )
-
-                    if coupon_code and bonus_amount > 0:
-                        WalletTransaction.objects.create(
-                            wallet=wallet,
-                            amount=bonus_amount,
-                            transactionType='Credit',
-                            success=True,
-                            stripeEventId=event_id,
-                            stripe_session_id=session_id,
-                            status='Success',
-                            details=f"Promotional Coupon Bonus - {coupon_code}"
-                        )
-        elif mode == 'subscription':
-            if customer_email:
-                superadmin = Employee.objects.filter(email=customer_email, isSuperAdmin=True).first()
-                if superadmin:
-                    org = superadmin.organization
-                    wallet, _ = Wallet.objects.get_or_create(employee=superadmin, defaults={'organization': org})
-                    if customer_id:
-                        wallet.stripe_customer_id = customer_id
-                        wallet.save()
-
-                    sub, _ = SubscriberAccount.objects.get_or_create(
-                        email=customer_email,
-                        defaults={'packageName': 'Professional', 'isActive': True}
-                    )
-                    sub.isActive = True
-                    sub.expiresAt = timezone.now() + timezone.timedelta(days=30)
-
-                    pkg_name = data_object.get('metadata', {}).get('package_name')
-                    if pkg_name:
-                        sub.packageName = pkg_name
-                    sub.save()
-
-                    if org:
-                        if not org.settings:
-                            org.settings = OrgSettings.objects.create()
-                            org.save()
-                        org.settings.subscriptionDays = 30
-                        org.settings.save()
-
-    elif event_type == 'customer.subscription.updated':
-        customer_id = data_object.get('customer')
-        wallet = Wallet.objects.filter(stripe_customer_id=customer_id).first()
-        org = None
-        superadmin_email = None
-
-        if wallet:
-            org = wallet.organization
-            superadmin = Employee.objects.filter(organization=org, isSuperAdmin=True).first()
-            if superadmin:
-                superadmin_email = superadmin.email
-
-        if not superadmin_email and customer_id:
-            try:
-                cust = stripe.Customer.retrieve(customer_id)
-                email = cust.get('email')
-                if email:
-                    superadmin = Employee.objects.filter(email=email, isSuperAdmin=True).first()
-                    if superadmin:
-                        superadmin_email = email
-                        org = superadmin.organization
-                        wallet, _ = Wallet.objects.get_or_create(employee=superadmin, defaults={'organization': org})
-                        wallet.stripe_customer_id = customer_id
-                        wallet.save()
-            except Exception as e:
-                print(f"Stripe customer retrieve failed: {e}")
-
-        if superadmin_email:
-            sub, _ = SubscriberAccount.objects.get_or_create(
-                email=superadmin_email,
-                defaults={'packageName': 'Professional', 'isActive': True}
-            )
-            sub.isActive = True
-            sub.expiresAt = timezone.now() + timezone.timedelta(days=30)
-            sub.save()
-
-            if org:
-                if not org.settings:
-                    org.settings = OrgSettings.objects.create()
-                    org.save()
-                org.settings.subscriptionDays = 30
-                org.settings.save()
-
-    elif event_type == 'invoice.paid':
-        email = data_object.get('customer_email')
-        amount = Decimal(str(data_object.get('amount_paid', 0))) / Decimal('100.0')
-
-        if email:
-            employee = Employee.objects.filter(email=email).first()
-            if employee:
-                wallet, _ = Wallet.objects.get_or_create(employee=employee, defaults={'organization': employee.organization})
-                wallet.balance = Decimal(str(wallet.balance)) - amount
-                wallet.save()
-
-                hosted_invoice_url = data_object.get('hosted_invoice_url')
-                invoice_pdf = data_object.get('invoice_pdf')
-                receipt_url = hosted_invoice_url or invoice_pdf
-
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=amount,
-                    transactionType='Debit',
-                    success=True,
-                    stripeEventId=event_id,
-                    status='Success',
-                    details=f"Subscription renewal paid: Invoice {data_object.get('id')}",
-                    receipt_url=receipt_url
+            if wallet_id:
+                from company.api.v1.services import BillingService
+                BillingService.credit_wallet_from_payment(
+                    wallet_id=wallet_id,
+                    amount_dec=tx.amount if tx else amount_dec,
+                    bonus_amount_dec=bonus_amount,
+                    coupon_code=coupon_code,
+                    razorpay_order_id=order_id,
+                    razorpay_payment_id=payment_id,
+                    gateway_event_id=event_id,
+                    details="Wallet Top-up via Razorpay Webhook",
+                    target_org_id=target_org_id
                 )
+        elif payment_type == 'subscription' or (tx and tx.transactionType == 'Debit'):
+            target_org_id = note_org_id or (tx.wallet.organization_id if tx and tx.wallet else None)
+            if target_org_id:
+                try:
+                    org = Organization.objects.get(id=target_org_id)
+                    org_settings = org.settings
+                    if not org_settings:
+                        org_settings = OrgSettings.objects.create()
+                        org.settings = org_settings
+                        org.save()
 
-    elif event_type == 'invoice.payment_failed':
-        email = data_object.get('customer_email')
-        amount = Decimal(str(data_object.get('amount_due', 0))) / Decimal('100.0')
+                    emp_count = int(notes.get('employee_count', 10))
+                    addons_str = notes.get('addons', '')
+                    addons = [a.strip() for a in addons_str.split(',') if a.strip()]
 
-        if email:
-            employee = Employee.objects.filter(email=email).first()
-            if employee:
-                wallet, _ = Wallet.objects.get_or_create(employee=employee, defaults={'organization': employee.organization})
+                    org_settings.max_employees_allowed = emp_count
+                    org_settings.is_attendance_enabled = 'attendance' in addons
+                    org_settings.is_project_enabled = 'project' in addons
+                    org_settings.subscriptionDays = 30
+                    org_settings.subscriptionStatus = 'Active'
+                    org_settings.save()
 
-                hosted_invoice_url = data_object.get('hosted_invoice_url')
-                invoice_pdf = data_object.get('invoice_pdf')
-                receipt_url = hosted_invoice_url or invoice_pdf
-
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=amount,
-                    transactionType='Debit',
-                    success=False,
-                    stripeEventId=event_id,
-                    status='Failed',
-                    details=f"Subscription renewal payment failed: Invoice {data_object.get('id')}",
-                    receipt_url=receipt_url
-                )
-
-    elif event_type == 'payment_intent.succeeded':
-        email = data_object.get('receipt_email')
-        if not email:
-            metadata = data_object.get('metadata', {})
-            email = metadata.get('email') or metadata.get('customer_email')
-        if not email:
-            charges = data_object.get('charges', {}).get('data', [])
-            if charges:
-                email = charges[0].get('billing_details', {}).get('email')
-
-        amount = Decimal(str(data_object.get('amount_received', 0))) / Decimal('100.0')
-
-        if email:
-            employee = Employee.objects.filter(email=email).first()
-            if employee:
-                wallet, _ = Wallet.objects.get_or_create(employee=employee, defaults={'organization': employee.organization})
-                wallet.balance = Decimal(str(wallet.balance)) + amount
-                wallet.save()
-
-                charges = data_object.get('charges', {}).get('data', [])
-                receipt_url = charges[0].get('receipt_url') if charges else None
-
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=amount,
-                    transactionType='Credit',
-                    success=True,
-                    stripeEventId=event_id,
-                    status='Success',
-                    details=f"Direct wallet top-up succeeded: PaymentIntent {data_object.get('id')}",
-                    receipt_url=receipt_url
-                )
+                    if tx:
+                        tx.status = 'Success'
+                        tx.success = True
+                        tx.razorpay_payment_id = payment_id
+                        tx.gateway_event_id = event_id
+                        tx.save()
+                except Organization.DoesNotExist:
+                    pass
 
     return HttpResponse(status=200)
+
+
+def stripe_webhook(request):
+    return razorpay_webhook(request)
+
 
 # ==============================================================================
 # Billing Views (moved from company app)
@@ -937,7 +848,7 @@ def stripe_webhook(request):
 
 
 # --------------------------------------------------------------------------------
-# WalletViewSet: ViewSet managing employee wallets, stripes, and current balances.
+# WalletViewSet: ViewSet managing employee wallets and current balances.
 # --------------------------------------------------------------------------------
 class WalletViewSet(viewsets.ModelViewSet):
     queryset = Wallet.objects.all().order_by('-id')
@@ -959,27 +870,20 @@ class WalletViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='current')
     def current_wallet(self, request):
         user = request.user
-        if not user.organization:
-            org, _ = Organization.objects.get_or_create(
-                subdomain="mock",
-                defaults={'name': 'Mock Organization'}
-            )
-            user.organization = org
-            user.save()
+        active_org = getattr(request, 'active_organization', None)
+        active_mem = getattr(request, 'active_membership', None)
+
+        if not active_org or not active_mem or not active_mem.is_active_in_org or active_mem.is_deleted:
+            return Response({'error': 'Active organization context and valid membership are required.'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
-            wallet = Wallet.objects.filter(employee=user).first()
-
+            wallet = Wallet.objects.filter(organization=active_org).first()
             if not wallet:
                 wallet = Wallet.objects.create(
                     employee=user,
-                    organization=user.organization,
+                    organization=active_org,
                     balance=Decimal('0.00')
                 )
-
-            if not wallet.organization and user.organization:
-                wallet.organization = user.organization
-                wallet.save()
 
             serializer = self.get_serializer(wallet)
             return Response(serializer.data)
@@ -992,47 +896,44 @@ class WalletViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='topup')
     def topup(self, request):
-        import stripe as stripe_module
         amount = request.data.get('amount')
         coupon_code = request.data.get('coupon_code')
 
         if not amount:
-            return Response({'error': 'Amount is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Enter a valid deposit amount.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             amount_dec = Decimal(str(amount))
             if amount_dec <= 0:
-                return Response({'error': 'Amount must be greater than zero'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Deposit amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception:
-            return Response({'error': 'Invalid amount value'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'Enter a valid deposit amount.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        user = request.user
-        if not user.organization:
-            org, _ = Organization.objects.get_or_create(
-                subdomain="mock", defaults={'name': 'Mock Organization'}
+        active_org = getattr(request, 'active_organization', None)
+        active_mem = getattr(request, 'active_membership', None)
+
+        if not active_org or not active_mem or not active_mem.is_active_in_org or active_mem.is_deleted:
+            return Response({'error': 'Active organization context and valid membership are required for wallet top-up.'}, status=status.HTTP_403_FORBIDDEN)
+
+        wallet = Wallet.objects.filter(organization=active_org).order_by('id').first()
+        if not wallet:
+            wallet = Wallet.objects.create(
+                organization=active_org,
+                employee=request.user,
+                balance=Decimal('0.00')
             )
-            user.organization = org
-            user.save()
-
-        wallet, created = Wallet.objects.get_or_create(
-            employee=user,
-            defaults={'organization': user.organization, 'balance': Decimal('0.00')}
-        )
-        if not wallet.organization and user.organization:
-            wallet.organization = user.organization
-            wallet.save()
 
         bonus_amount_dec = Decimal('0.00')
         validated_code = None
         if coupon_code and coupon_code.strip():
             coupon = BackofficeCoupon.objects.filter(code__iexact=coupon_code.strip()).first()
             if not coupon:
-                return Response({'error': 'Invalid coupon code'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Invalid coupon code.'}, status=status.HTTP_400_BAD_REQUEST)
             if not coupon.is_active:
-                return Response({'error': 'Coupon is inactive'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Coupon is inactive.'}, status=status.HTTP_400_BAD_REQUEST)
             if coupon.expiry_date and coupon.expiry_date < timezone.now():
-                return Response({'error': 'Coupon has expired'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Coupon has expired.'}, status=status.HTTP_400_BAD_REQUEST)
             if amount_dec < coupon.min_deposit_limit:
-                return Response({'error': f'Minimum deposit of ₹{coupon.min_deposit_limit} required for this coupon'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': f'Minimum deposit of ₹{coupon.min_deposit_limit} required for this coupon.'}, status=status.HTTP_400_BAD_REQUEST)
 
             validated_code = coupon.code
             if coupon.value_type == 'Percentage':
@@ -1041,55 +942,83 @@ class WalletViewSet(viewsets.ModelViewSet):
                 bonus_amount_dec = coupon.value
             bonus_amount_dec = bonus_amount_dec.quantize(Decimal('0.01'))
 
-        import os as _os
-        from django.conf import settings as _settings
-        stripe_key = _os.environ.get('STRIPE_SECRET_KEY') or getattr(_settings, 'STRIPE_SECRET_KEY', None)
-        is_dev_env = getattr(_settings, 'is_dev', False) or getattr(_settings, 'TEST_MODE', False)
-        allow_mock = is_dev_env and getattr(_settings, 'ALLOW_MOCK_PAYMENTS', False)
+        client, key_id, key_secret = get_razorpay_client()
+        allow_mock = getattr(dj_settings, 'ALLOW_MOCK_PAYMENTS', False) or getattr(dj_settings, 'DEBUG', False)
+        import uuid
 
-        if not stripe_key:
+        if not client:
             if not allow_mock:
-                return Response({'error': 'Stripe payment gateway is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            stripe_key = "sk_test_fake_secret_key"
-        stripe_module.api_key = stripe_key
+                return Response({'error': 'Payment service is temporarily unavailable.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        frontend_url = _settings.FRONTEND_URL
-        meta = {'wallet_id': str(wallet.id), 'amount': str(amount_dec), 'type': 'topup'}
-        if validated_code:
-            meta['coupon_code'] = validated_code
-            meta['bonus_amount'] = str(bonus_amount_dec)
+            mock_order_id = f"mock_rzp_order_{uuid.uuid4().hex}"
+            detail_msg = f"Pending wallet top-up of ₹{amount_dec} via Mock Checkout"
+            if validated_code:
+                detail_msg += f" (Code '{validated_code}', Bonus ₹{bonus_amount_dec})"
 
-        is_fake_stripe = allow_mock and (stripe_module.api_key == "sk_test_fake_secret_key")
-        if is_fake_stripe:
-            import uuid
-            session_id = f"mock_wallet_topup_{uuid.uuid4().hex}"
             WalletTransaction.objects.create(
-                wallet=wallet, amount=amount_dec, transactionType='Credit',
-                success=False, stripe_session_id=session_id, status='Pending',
-                details=f"Pending wallet top-up of ₹{amount_dec} via Mock Checkout"
+                wallet=wallet,
+                amount=amount_dec + bonus_amount_dec,
+                transactionType='Credit',
+                success=False,
+                razorpay_order_id=mock_order_id,
+                status='Pending',
+                details=detail_msg
             )
-            checkout_url = f"{frontend_url}/admin/settings?tab=billing&status=success&session_id={session_id}"
-            return Response({'checkoutUrl': checkout_url}, status=status.HTTP_200_OK)
+            return Response({
+                'gateway': 'razorpay',
+                'key_id': key_id or 'rzp_test_mock',
+                'order_id': mock_order_id,
+                'amount': int(amount_dec * 100),
+                'currency': 'INR',
+                'name': 'CubeLogs',
+                'description': 'Wallet Top-up',
+                'payment_type': 'wallet',
+                'is_mock': True
+            }, status=status.HTTP_200_OK)
+
+        notes = {
+            'wallet_id': str(wallet.id),
+            'org_id': str(active_org.id),
+            'amount': str(amount_dec),
+            'payment_type': 'wallet'
+        }
+        if validated_code:
+            notes['coupon_code'] = validated_code
+            notes['bonus_amount'] = str(bonus_amount_dec)
 
         try:
-            session = stripe_module.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{'price_data': {'currency': 'inr', 'product_data': {'name': 'CubeLogs Wallet Top-Up', 'description': f"Deposit to CubeLogs Prepaid Wallet for {user.email}"}, 'unit_amount': int(amount_dec * 100)}, 'quantity': 1}],
-                mode='payment',
-                success_url=f"{frontend_url}/admin/settings?tab=billing&status=success&session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url=f"{frontend_url}/admin/settings?tab=billing&status=cancel",
-                client_reference_id=str(user.id),
-                customer_email=user.email,
-                metadata=meta
-            )
+            order_data = {
+                'amount': int(amount_dec * 100),
+                'currency': 'INR',
+                'receipt': f"rcpt_topup_{uuid.uuid4().hex[:12]}",
+                'notes': notes
+            }
+            order = client.order.create(data=order_data)
+
             WalletTransaction.objects.create(
-                wallet=wallet, amount=amount_dec, transactionType='Credit',
-                success=False, stripe_session_id=session.id, status='Pending',
-                details=f"Pending wallet top-up of ₹{amount_dec} via Stripe Checkout"
+                wallet=wallet,
+                amount=amount_dec,
+                transactionType='Credit',
+                success=False,
+                razorpay_order_id=order['id'],
+                status='Pending',
+                details=f"Pending wallet top-up of ₹{amount_dec} via Razorpay Checkout"
             )
-            return Response({'checkoutUrl': session.url}, status=status.HTTP_200_OK)
+
+            return Response({
+                'gateway': 'razorpay',
+                'key_id': key_id,
+                'order_id': order['id'],
+                'amount': order['amount'],
+                'currency': 'INR',
+                'name': 'CubeLogs',
+                'description': 'Wallet Top-up',
+                'payment_type': 'wallet'
+            }, status=status.HTTP_200_OK)
         except Exception as e:
-            return Response({'error': f"Failed to initiate Stripe payment: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            import logging
+            logging.getLogger(__name__).error(f"Failed to initiate Razorpay payment: {e}")
+            return Response({'error': 'Payment service is temporarily unavailable.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['post'], url_path='toggle-module')
     def toggle_module(self, request):
@@ -1106,13 +1035,21 @@ class WalletViewSet(viewsets.ModelViewSet):
 
         enable = bool(enable)
         user = request.user
+        active_org = getattr(request, 'active_organization', None)
+        active_mem = getattr(request, 'active_membership', None)
+        if not active_mem and user.is_authenticated and active_org:
+            from users.models import OrganizationMembership
+            active_mem = OrganizationMembership.objects.filter(
+                user=user,
+                organization=active_org,
+                is_active_in_org=True,
+                is_deleted=False
+            ).first()
 
-        if not user.organization:
-            org, _ = Organization.objects.get_or_create(subdomain="mock", defaults={'name': 'Mock Organization'})
-            user.organization = org
-            user.save()
+        if not active_org or (not active_mem and not (getattr(user, 'isSuperAdmin', False) and getattr(user, 'organization', None) is None)):
+            return Response({'error': 'Active organization context and valid membership are required.'}, status=status.HTTP_403_FORBIDDEN)
 
-        org = user.organization
+        org = active_org
         settings_obj = org.settings
         if not settings_obj:
             settings_obj = OrgSettings.objects.create()
@@ -1123,42 +1060,16 @@ class WalletViewSet(viewsets.ModelViewSet):
         if current_state == enable:
             return Response({'message': 'Module already in desired state', 'module': module, 'enabled': enable, 'charged': '0.00'})
 
-        if not enable:
-            setattr(settings_obj, f'is_{module}_enabled', False)
-            settings_obj.save()
-            return Response({'message': f'{module.title()} module disabled.', 'module': module, 'enabled': False, 'charged': '0.00'})
-
-        now = timezone.now()
-        total_days = calendar.monthrange(now.year, now.month)[1]
-        remaining_days = total_days - now.day + 1
-        
-        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
-        base_price = g_settings.attendance_module_price if module == 'attendance' else g_settings.tasks_module_price
-        
-        daily_price = Decimal(str(base_price)) / Decimal(str(total_days))
-        prorated_amount = (daily_price * Decimal(str(remaining_days))).quantize(Decimal('0.01'))
-
-        wallet, _ = Wallet.objects.get_or_create(employee=user, defaults={'organization': org, 'balance': Decimal('0.00')})
-        if not wallet.organization:
-            wallet.organization = org
-            wallet.save()
-
-        if wallet.balance < prorated_amount:
-            return Response({'error': 'Insufficient wallet balance', 'required': str(prorated_amount), 'available': str(wallet.balance)}, status=status.HTTP_402_PAYMENT_REQUIRED)
-
-        wallet.balance -= prorated_amount
-        wallet.save()
-
-        daily_display = daily_price.quantize(Decimal('0.01'))
-        WalletTransaction.objects.create(
-            wallet=wallet, amount=prorated_amount, transactionType='Debit', success=True, status='Success',
-            details=f"Prorated charge for {module.title()} module activation ({remaining_days}/{total_days} days @ ₹{daily_display}/day [Base: ₹{base_price}/mo])"
-        )
-
-        setattr(settings_obj, f'is_{module}_enabled', True)
+        setattr(settings_obj, f'is_{module}_enabled', enable)
         settings_obj.save()
 
-        return Response({'message': f'{module.title()} module activated successfully.', 'module': module, 'enabled': True, 'charged': str(prorated_amount), 'remaining_days': remaining_days, 'total_days': total_days, 'new_balance': str(wallet.balance)})
+        action_word = 'activated' if enable else 'disabled'
+        return Response({
+            'message': f'{module.title()} module {action_word} successfully.',
+            'module': module,
+            'enabled': enable,
+            'charged': '0.00'
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], url_path='validate-coupon')
     def validate_coupon(self, request):
@@ -1267,7 +1178,11 @@ class GlobalBillingSettingsViewSet(viewsets.ViewSet):
         settings_instance, _ = GlobalBillingSettings.objects.get_or_create(id=1)
         serializer = GlobalBillingSettingsSerializer(settings_instance, data=request.data, partial=True)
         if serializer.is_valid():
-            serializer.save()
+            saved = serializer.save()
+            if 'attendance_module_price' in request.data:
+                SubscriptionPackage.objects.filter(features__icontains='attendance', isActive=True).exclude(price=0).update(price=saved.attendance_module_price)
+            if 'tasks_module_price' in request.data:
+                SubscriptionPackage.objects.filter(features__icontains='project', isActive=True).exclude(price=0).update(price=saved.tasks_module_price)
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1330,4 +1245,102 @@ class BackofficeEmailLogResendView(APIView):
             log_item.error_message = str(exc)
             log_item.save()
             return Response({'error': f'Failed to resend email: {str(exc)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# --------------------------------------------------------------------------------
+# LiveBillingEstimateView: API endpoint providing live estimate for upcoming monthly bill
+# --------------------------------------------------------------------------------
+class LiveBillingEstimateView(APIView):
+    permission_classes = [IsAuthenticated, HasRequiredPermission]
+    required_permission = 'settings:billing'
+
+    def get(self, request):
+        org = getattr(request, 'active_organization', None) or getattr(request.user, 'organization', None)
+        active_mem = getattr(request, 'active_membership', None)
+        if not org or (active_mem and (not active_mem.is_active_in_org or active_mem.is_deleted)):
+            return Response({'error': 'Active organization not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        g_settings = GlobalBillingSettings.get_settings()
+        settings_obj = org.settings
+
+        from company.api.v1.services import BillingService
+        billable_emp_count = BillingService.get_billable_memberships_qs(org).count()
+        unit_price = Decimal(str(g_settings.employee_seat_price))
+        emp_total = Decimal(str(billable_emp_count)) * unit_price
+
+        att_enabled = settings_obj.is_attendance_enabled if settings_obj else False
+        att_rate = Decimal(str(g_settings.attendance_module_price))
+        att_charge = (Decimal(str(billable_emp_count)) * att_rate) if att_enabled else Decimal('0.00')
+
+        proj_enabled = settings_obj.is_project_enabled if settings_obj else False
+        proj_rate = Decimal(str(g_settings.tasks_module_price))
+        proj_charge = (Decimal(str(billable_emp_count)) * proj_rate) if proj_enabled else Decimal('0.00')
+
+        total_estimate = emp_total + att_charge + proj_charge
+
+        return Response({
+            'billable_employee_count': billable_emp_count,
+            'employee_rate': f"{unit_price:.2f}",
+            'employee_charge': f"{emp_total:.2f}",
+            'employee_unit_price': float(unit_price),
+            'employee_seat_estimate': float(emp_total),
+
+            'attendance_enabled': att_enabled,
+            'attendance_rate': f"{att_rate:.2f}",
+            'attendance_charge': f"{att_charge:.2f}",
+            'attendance_price': float(att_charge),
+
+            'project_enabled': proj_enabled,
+            'project_rate': f"{proj_rate:.2f}",
+            'project_charge': f"{proj_charge:.2f}",
+            'project_price': float(proj_charge),
+
+            'estimated_next_total': float(total_estimate),
+            'currency': g_settings.currency,
+        }, status=status.HTTP_200_OK)
+
+
+# --------------------------------------------------------------------------------
+# MonthlyInvoicePDFView: API endpoint streaming downloadable PDF invoice
+# --------------------------------------------------------------------------------
+class MonthlyInvoicePDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            invoice = MonthlyInvoice.objects.get(pk=pk)
+        except MonthlyInvoice.DoesNotExist:
+            return Response({'error': 'Invoice not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Cross-Tenant Authorization Check
+        org = getattr(request, 'active_organization', None) or getattr(request.user, 'organization', None)
+        if not org or invoice.organization_id != org.id:
+            if not request.user.is_superuser:
+                return Response({'error': 'Invoice not found or access denied.'}, status=status.HTTP_404_NOT_FOUND)
+
+        from subscribers.pdf import generate_invoice_pdf
+        pdf_buf = generate_invoice_pdf(invoice)
+
+        from django.http import HttpResponse
+        response = HttpResponse(pdf_buf.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="CubeLogs_Invoice_{invoice.id}.pdf"'
+        return response
+
+
+# --------------------------------------------------------------------------------
+# PublicPricingView: Safe public read-only rates endpoint backed by GlobalBillingSettings
+# --------------------------------------------------------------------------------
+class PublicPricingView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        g_settings = GlobalBillingSettings.get_settings()
+        return Response({
+            'currency': g_settings.currency or 'INR',
+            'employee_seat_price': str(g_settings.employee_seat_price),
+            'attendance_module_price': str(g_settings.attendance_module_price),
+            'project_module_price': str(g_settings.tasks_module_price),
+            'base_subscription_price': '0.00',
+            'tax_percentage': '0.00'
+        }, status=status.HTTP_200_OK)
 

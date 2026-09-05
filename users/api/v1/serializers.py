@@ -18,9 +18,75 @@ from users.models import Employee, Role, PermissionFlag
 class CustomTokenRefreshSerializer(TokenRefreshSerializer):
     def validate(self, attrs):
         try:
-            return super().validate(attrs)
+            from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
+            from core.tenant import TenantContext
+            from users.models import OrganizationMembership
+
+            # attrs['refresh'] is the incoming refresh token string
+            # Inspect claims BEFORE super().validate blacklists it when BLACKLIST_AFTER_ROTATION is enabled
+            incoming_refresh = RefreshToken(attrs['refresh'])
+            token_active_org_id = incoming_refresh.get('active_org_id')
+            token_membership_id = incoming_refresh.get('membership_id')
+
+            data = super().validate(attrs)
+
+            access_token = AccessToken(data['access'])
+            user_id = access_token.get('user_id')
+            if user_id:
+                user = get_user_model().objects.get(id=user_id)
+                if not user.is_active:
+                    raise InvalidToken("User account is inactive.")
+
+                active_membership = None
+                if token_membership_id:
+                    active_membership = OrganizationMembership.objects.filter(
+                        id=token_membership_id,
+                        user=user,
+                        is_active_in_org=True,
+                        is_deleted=False
+                    ).select_related('organization', 'role').first()
+                    if not active_membership:
+                        raise InvalidToken("Active membership has been deactivated or removed.")
+                elif token_active_org_id:
+                    # Only enforce if user has memberships; if user has an inactive membership in that org, fail closed
+                    active_membership = OrganizationMembership.objects.filter(
+                        organization_id=token_active_org_id,
+                        user=user,
+                        is_active_in_org=True,
+                        is_deleted=False
+                    ).select_related('organization', 'role').first()
+                    if not active_membership:
+                        # Check if an inactive membership exists for this org
+                        inactive_mem = OrganizationMembership.objects.filter(
+                            organization_id=token_active_org_id,
+                            user=user,
+                            is_active_in_org=False
+                        ).exists()
+                        if inactive_mem:
+                            raise InvalidToken("Active membership in organization has been deactivated or removed.")
+                else:
+                    fake_req = type('Req', (), {'user': user, 'is_authenticated': True})()
+                    active_membership = TenantContext.get_active_membership(fake_req)
+
+                if active_membership:
+                    access_token['active_org_id'] = active_membership.organization_id
+                    access_token['membership_id'] = active_membership.id
+                    # If refresh rotation is enabled, preserve claims on rotated refresh
+                    if 'refresh' in data:
+                        rotated_refresh = RefreshToken(data['refresh'])
+                        rotated_refresh['active_org_id'] = active_membership.organization_id
+                        rotated_refresh['membership_id'] = active_membership.id
+                        data['refresh'] = str(rotated_refresh)
+                else:
+                    access_token['active_org_id'] = getattr(user, 'organization_id', None)
+                    access_token['membership_id'] = None
+
+                data['access'] = str(access_token)
+
+            return data
         except get_user_model().DoesNotExist:
             raise InvalidToken("User does not exist or has been deleted.")
+
 
 
 class PermissionFlagSerializer(serializers.ModelSerializer):
@@ -45,6 +111,11 @@ class RoleSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['is_system_role', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'slug': {'required': False},
+            'organization': {'required': False}
+        }
+        validators = []
 
     def get_permissions(self, obj):
         return list(obj.permissions.values_list('key', flat=True))
@@ -71,8 +142,10 @@ class RoleSerializer(serializers.ModelSerializer):
         if permission_keys is None:
             permission_keys = self.initial_data.get('permissions') or self.initial_data.get('permission_keys')
         request = self.context.get('request')
-        if request and request.user and getattr(request.user, 'organization', None):
-            validated_data['organization'] = request.user.organization
+        if request and request.user:
+            active_org = getattr(request, 'active_organization', None) or getattr(request.user, 'organization', None)
+            if active_org:
+                validated_data['organization'] = active_org
 
         name = validated_data.get('name', '')
         if not validated_data.get('slug'):
@@ -142,6 +215,37 @@ class EmployeeSerializer(serializers.ModelSerializer):
             attrs['role'] = role_obj
             attrs['role_name'] = role_obj.name
 
+        # Date Validation
+        joining_date = attrs.get('joining_date', getattr(self.instance, 'joining_date', None))
+        last_working_date = attrs.get('last_working_date', getattr(self.instance, 'last_working_date', None))
+        if joining_date and last_working_date and last_working_date < joining_date:
+            raise serializers.ValidationError({"last_working_date": "Last working date cannot be earlier than joining date."})
+
+        # Resigned / Terminated Requires Last Working Date (default to today if not provided)
+        employment_status = attrs.get('employment_status', getattr(self.instance, 'employment_status', None))
+        if employment_status in ['Resigned', 'Terminated'] and not last_working_date:
+            from django.utils import timezone
+            attrs['last_working_date'] = timezone.now().date()
+
+        # Classification & Tenant Security Checks on creation
+        if not self.instance:
+            email = attrs.get('email', '')
+            request = self.context.get('request')
+            request_user = request.user if request and request.user and request.user.is_authenticated else None
+
+            target_org = getattr(request, 'active_organization', None) or attrs.get('organization')
+            if not target_org and request_user and not (request_user.isSuperAdmin and request_user.organization is None and target_org):
+                target_org = getattr(request_user, 'organization', None)
+
+            from users.api.v1.services import UserService
+            intent, existing = UserService.classify_employee_creation(email, target_org)
+
+            if intent == 'SAME_ORG_EXISTING':
+                raise serializers.ValidationError({"email": ["An employee with this email already exists in your organization. Please edit the existing employee instead."]})
+            elif intent == 'OTHER_ORG_ACTIVE':
+                if not getattr(request, 'active_organization', None):
+                    raise serializers.ValidationError({"email": ["This email is currently associated with an active employee in another organization."]})
+
         return super().validate(attrs)
 
     class Meta:
@@ -149,6 +253,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'email', 'username', 'first_name', 'last_name', 'name',
             'phone', 'designation', 'role', 'isSuperAdmin', 'is_active', 'employment_status',
+            'joining_date', 'last_working_date', 'employee_code', 'department',
             'useDefaultPermissions', 'permissions', 'extra_permissions', 'denied_permissions', 'effective_permissions',
             'profilePhoto', 'password', 'subscription', 'organization'
         ]
@@ -159,6 +264,33 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
     def get_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.email
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        target_org = None
+        if request:
+            target_org = getattr(request, 'active_organization', None) or (request.user.organization if request.user and request.user.is_authenticated else None)
+
+        if not target_org:
+            target_org = instance.organization
+
+        if target_org:
+            from users.models import OrganizationMembership
+            mem = OrganizationMembership.objects.filter(user=instance, organization=target_org, is_deleted=False).select_related('role').first()
+            if mem:
+                data['membership_id'] = mem.id
+                data['employee_code'] = mem.employee_code
+                data['department'] = mem.department or ''
+                data['designation'] = mem.designation
+                data['employment_status'] = mem.employment_status
+                data['joining_date'] = mem.joining_date.isoformat() if mem.joining_date else None
+                data['last_working_date'] = mem.last_working_date.isoformat() if mem.last_working_date else None
+                data['is_active_in_org'] = mem.is_active_in_org
+                if mem.role:
+                    data['role'] = mem.role.id
+                    data['role_name'] = mem.role.name
+        return data
 
     def get_effective_permissions(self, obj):
         return obj.get_effective_permissions()
@@ -285,25 +417,13 @@ class EmployeeSerializer(serializers.ModelSerializer):
         }
 
     def create(self, validated_data):
-        from users.models import Employee
+        from users.models import Employee, OrganizationMembership
         from users.api.v1.services import UserService
         from core.utils import generate_secure_password
+        from rest_framework import serializers
 
         request = self.context.get('request')
         request_user = request.user if request and request.user and request.user.is_authenticated else None
-
-        # Enforce org employee cap
-        if request_user and request_user.organization:
-            org = request_user.organization
-            if org.settings:
-                limit = org.settings.max_employees_allowed
-                if Employee.objects.filter(organization=org).count() >= limit:
-                    raise serializers.ValidationError({
-                        'non_field_errors': [
-                            f"Your active organization workspace is capped at {limit} active employees. "
-                            f"Please upgrade your package to onboard more employees."
-                        ]
-                    })
 
         # Parse combined name field if provided
         name = self.initial_data.get('name')
@@ -312,27 +432,97 @@ class EmployeeSerializer(serializers.ModelSerializer):
             validated_data['first_name'] = parts[0]
             validated_data['last_name'] = parts[1] if len(parts) > 1 else ''
 
-        email = validated_data.get('email', '')
-        employee = (
-            Employee.objects.filter(email=email).first()
-            or Employee.objects.filter(username=email).first()
-        )
-        raw_password = None
+        email = validated_data.get('email', '').strip().lower()
 
-        if employee:
-            # Update existing employee record
-            for attr, value in validated_data.items():
-                if attr not in ['password', 'username', 'email']:
-                    setattr(employee, attr, value)
-            employee.save()
+        # Determine target organization from active tenant context
+        target_org = None
+        if request:
+            target_org = getattr(request, 'active_organization', None)
+        if not target_org and request_user:
+            target_org = request_user.organization
+        if not target_org:
+            target_org = validated_data.get('organization')
+
+        if not target_org:
+            raise serializers.ValidationError({"organization": "Active organization context is required to create an employee."})
+
+        validated_data['organization'] = target_org
+
+        existing = (
+            Employee.objects.filter(email__iexact=email).first()
+            or Employee.objects.filter(username__iexact=email).first()
+        )
+
+        emp_code = validated_data.get('employee_code')
+        dept = validated_data.get('department', '')
+        desig = validated_data.get('designation')
+        role_obj = validated_data.get('role')
+        status_val = validated_data.get('employment_status', 'Active')
+        j_date = validated_data.get('joining_date')
+        lwd_val = validated_data.get('last_working_date')
+
+        if existing:
+            # Check existing membership in target org
+            mem = OrganizationMembership.objects.filter(user=existing, organization=target_org).first()
+
+            if mem and mem.is_active_in_org and not mem.is_deleted and mem.employment_status == 'Active':
+                raise serializers.ValidationError({"email": "An employee with this email already exists in this organization."})
+
+            if mem:
+                # Reactivate / Rehire existing membership
+                mem.employment_status = 'Active'
+                mem.is_active_in_org = True
+                mem.is_deleted = False
+                mem.last_working_date = None
+                mem.joining_date = j_date or mem.joining_date
+                mem.department = dept or mem.department
+                mem.designation = desig or mem.designation
+                mem.employee_code = emp_code or mem.employee_code
+                if role_obj:
+                    mem.role = role_obj
+                mem.save()
+            else:
+                # Create new membership in target org for existing global user
+                mem = OrganizationMembership.objects.create(
+                    user=existing,
+                    organization=target_org,
+                    employee_code=emp_code,
+                    department=dept or '',
+                    designation=desig,
+                    role=role_obj,
+                    employment_status='Active',
+                    joining_date=j_date,
+                    last_working_date=None,
+                    is_active_in_org=True
+                )
+
+            # Update basic info if provided
+            if validated_data.get('first_name'):
+                existing.first_name = validated_data['first_name']
+            if validated_data.get('last_name'):
+                existing.last_name = validated_data['last_name']
+            if validated_data.get('phone'):
+                existing.phone = validated_data['phone']
+            existing.organization = target_org
+            existing.employment_status = 'Active'
+            existing.save()
+
+            # Queue welcome email for existing user joining new/reactivated org (Use existing password)
+            try:
+                from django.db import transaction
+                transaction.on_commit(
+                    lambda emp=existing: UserService.send_welcome_email(emp, synchronous=False)
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error("Failed to queue welcome email for existing user %s: %s", existing.email, exc)
+
+            return existing
+
         else:
+            # Brand-New Global User
             validated_data.setdefault('username', email)
             validated_data.pop('password', None)
-
-            # Assign org (root superadmins may specify their own org via payload)
-            if request_user:
-                if not (request_user.isSuperAdmin and request_user.organization is None and validated_data.get('organization')):
-                    validated_data['organization'] = request_user.organization
 
             employee = super().create(validated_data)
 
@@ -341,40 +531,88 @@ class EmployeeSerializer(serializers.ModelSerializer):
             employee._raw_password = raw_password
             employee.save()
 
-        if employee.role:
-            employee.role_name = employee.role.name
-            employee.save(update_fields=['role_name'])
+            if employee.role:
+                employee.role_name = employee.role.name
+                employee.save(update_fields=['role_name'])
 
-        # Send admin onboarding email via service
-        try:
-            UserService.send_admin_onboarding_email(employee, raw_password, synchronous=True)
-        except Exception as exc:
-            import logging
-            logging.getLogger(__name__).error("Failed to send onboarding email to %s: %s", employee.email, exc)
+            # Create initial OrganizationMembership for target org
+            OrganizationMembership.objects.create(
+                user=employee,
+                organization=target_org,
+                employee_code=emp_code,
+                department=dept or '',
+                designation=desig,
+                role=role_obj,
+                employment_status='Active',
+                joining_date=j_date,
+                last_working_date=None,
+                is_active_in_org=True
+            )
 
-        return employee
+            # Queue admin_onboarding.html for brand new user with temp password
+            try:
+                from django.db import transaction
+                transaction.on_commit(
+                    lambda emp=employee, pwd=raw_password: UserService.send_admin_onboarding_email(emp, pwd, synchronous=False)
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error("Failed to queue onboarding email for %s: %s", employee.email, exc)
+
+            return employee
 
     def update(self, instance, validated_data):
+        from users.models import OrganizationMembership
+
+        request = self.context.get('request')
+        target_org = getattr(request, 'active_organization', None) if request else None
+        if not target_org:
+            target_org = instance.organization
+
         password = validated_data.pop('password', None)
         status_val = validated_data.get('employment_status')
-        if status_val:
-            if status_val in ['Deactivated', 'Terminated', 'Resigned']:
-                validated_data['is_active'] = False
-            elif status_val == 'Active':
-                validated_data['is_active'] = True
+        emp_code = validated_data.get('employee_code')
+        dept = validated_data.get('department')
+        desig = validated_data.get('designation')
+        role_obj = validated_data.get('role')
+        j_date = validated_data.get('joining_date')
+        lwd_val = validated_data.get('last_working_date')
 
+        # Update global employee fields
         name = self.initial_data.get('name')
         if name:
             parts = name.strip().split(' ', 1)
             validated_data['first_name'] = parts[0]
             validated_data['last_name'] = parts[1] if len(parts) > 1 else ''
-        employee = super().update(instance, validated_data)
 
-        if employee.role:
-            employee.role_name = employee.role.name
-            employee.save(update_fields=['role_name'])
+        employee = super().update(instance, validated_data)
 
         if password:
             employee.set_password(password)
             employee.save()
+
+        # Update target organization membership specifically
+        if target_org:
+            mem = OrganizationMembership.objects.filter(user=employee, organization=target_org).first()
+            if mem:
+                if status_val:
+                    mem.employment_status = status_val
+                    if status_val in ['Deactivated', 'Terminated', 'Resigned']:
+                        mem.is_active_in_org = False
+                    elif status_val == 'Active':
+                        mem.is_active_in_org = True
+                if emp_code is not None:
+                    mem.employee_code = emp_code
+                if dept is not None:
+                    mem.department = dept
+                if desig is not None:
+                    mem.designation = desig
+                if role_obj is not None:
+                    mem.role = role_obj
+                if j_date is not None:
+                    mem.joining_date = j_date
+                if lwd_val is not None:
+                    mem.last_working_date = lwd_val
+                mem.save()
+
         return employee

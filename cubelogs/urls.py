@@ -26,7 +26,7 @@ from users.api.v1.views import (
     backoffice_view, backoffice_login_view, backoffice_logout_view,
     backoffice_manifest_view, backoffice_sw_view
 )
-from subscribers.api.v1.views import stripe_webhook
+from subscribers.api.v1.views import stripe_webhook, razorpay_webhook
 
 def custom_admin_login(request, extra_context=None):
     if request.user.is_authenticated and not request.user.is_staff:
@@ -47,13 +47,21 @@ urlpatterns = [
     path('backoffice/logout/', backoffice_logout_view, name='backoffice_logout'),
     path('manifest.json', backoffice_manifest_view, name='backoffice_manifest'),
     path('sw.js', backoffice_sw_view, name='backoffice_sw'),
+    path('backoffice/razorpay-webhook/', razorpay_webhook, name='razorpay-webhook'),
     path('backoffice/stripe-webhook/', stripe_webhook, name='stripe-webhook'),
-    path('webhook/', stripe_webhook, name='stripe-webhook-root'),
+    path('webhook/', razorpay_webhook, name='razorpay-webhook-root'),
     path('api/', include('users.api.urls')),
     path('api/', include('attendance.api.urls')),
     path('api/', include('company.api.urls')),
     path('api/', include('subscribers.api.urls')),
     path('api/', include('projects.api.urls')),
+    path('api/', include('payroll.urls')),
+    path('api/v1/', include('users.api.urls')),
+    path('api/v1/', include('attendance.api.urls')),
+    path('api/v1/', include('company.api.urls')),
+    path('api/v1/', include('subscribers.api.urls')),
+    path('api/v1/', include('projects.api.urls')),
+    path('api/v1/', include('payroll.urls')),
     re_path(r'^media/project_attachments/(?P<path>.*)$', secure_media_block_view),
     re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
     re_path(r'^static/(?P<path>.*)$', serve, {'document_root': settings.STATIC_ROOT}),

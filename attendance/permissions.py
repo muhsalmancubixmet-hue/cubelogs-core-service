@@ -18,8 +18,8 @@ class IsLeaveOwnerOrManager(permissions.BasePermission):
             return True
 
         if view.action == 'create':
-            user_perms = getattr(user, 'permissions', [])
-            return 'leaves:apply' in user_perms
+            from core.decorators import has_fine_grained_permission
+            return has_fine_grained_permission(user, ['leaves:apply', 'leaves:manage'])
 
         return True
 
@@ -28,17 +28,17 @@ class IsLeaveOwnerOrManager(permissions.BasePermission):
         if user.is_superuser or getattr(user, 'isSuperAdmin', False):
             return True
 
-        user_perms = getattr(user, 'permissions', [])
+        from core.decorators import has_fine_grained_permission
 
         # Managing/Approving leaves
         if view.action in ['update', 'partial_update']:
-            return 'leaves:approve' in user_perms or 'leaves:manage' in user_perms
+            return has_fine_grained_permission(user, ['leaves:approve', 'leaves:manage'])
 
         # Cancelling leaves (deleting)
         if view.action == 'destroy':
             # Owners can cancel their own pending leaves
             if obj.employee == user and obj.status == 'Pending':
                 return True
-            return 'leaves:approve' in user_perms or 'leaves:manage' in user_perms
+            return has_fine_grained_permission(user, ['leaves:approve', 'leaves:manage'])
 
         return False

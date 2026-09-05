@@ -7,11 +7,7 @@ api/views/attendance.py — Attendance management views
 """
 import os
 import json
-import stripe
 from decimal import Decimal
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    import stripe.error
 
 from datetime import datetime, timedelta
 from datetime import date as datetime_date
@@ -31,19 +27,28 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 
+from django.db.models import Q
 from core.mixins import FilterMixinNew, TenantScopedViewSetMixin
 from core.permissions import HasRequiredPermission, ActionPermissionMixin, DRFCheckModePermission, DRFPlanPermissionRequired
 from attendance.permissions import IsLeaveOwnerOrManager
 from core.decorators import permission_required
 from core.module_registry.loader import load_modules
-from users.models import Employee, PERMISSION_FLAGS, Template
 from core.models import AuditLog, OrgSettings, Organization
-from attendance.models import AttendanceLog, Leave, Schedule, OfficeLocation, Holiday, LeaveType
+from users.models import Employee, PERMISSION_FLAGS, Template
+from attendance.models import AttendanceLog, Leave, Schedule, OfficeLocation, Holiday, LeaveType, AttendancePolicy, AttendancePeriod, AttendancePeriodEmployeeSnapshot
 from subscribers.models import SubscriptionPackage, SubscriberAccount
+from attendance.services import (
+    get_attendance_policy, save_attendance_policy,
+    get_daily_attendance_summary, get_monthly_attendance_summary,
+    is_date_locked, is_date_range_locked,
+    validate_attendance_period, finalize_attendance_period, reopen_attendance_period
+)
 
 from attendance.api.v1.serializers import (
     AttendanceLogSerializer, TemplateSerializer, OfficeLocationSerializer, ScheduleSerializer,
-    OrgSettingsSerializer, AuditLogSerializer, HolidaySerializer, LeaveTypeSerializer, LeaveSerializer
+    OrgSettingsSerializer, AuditLogSerializer, HolidaySerializer, LeaveTypeSerializer, LeaveSerializer,
+    AttendancePolicySerializer, AttendancePeriodSerializer, AttendancePeriodEmployeeSnapshotSerializer,
+    FinalizePeriodSerializer, ReopenPeriodSerializer
 )
 from users.filters import TemplateFilter
 from attendance.filters import (
@@ -75,11 +80,13 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
     }
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().filter(is_deleted=False)
         user = self.request.user
-        if user.is_authenticated and not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
-            user_perms = getattr(user, 'permissions', [])
-            if 'attendance:admin' not in user_perms and 'attendance:management_portal' not in user_perms:
+        if user.is_authenticated:
+            if user.organization:
+                qs = qs.filter(employee__organization=user.organization)
+            from core.decorators import has_fine_grained_permission
+            if not has_fine_grained_permission(user, ['attendance:admin', 'attendance:management_portal']):
                 qs = qs.filter(employee=user)
         return qs
 
@@ -95,8 +102,8 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         employee_id = request.data.get('employeeId') or request.user.id
         # Prevent IDOR
         if int(employee_id) != request.user.id:
-            user_perms = getattr(request.user, 'permissions', [])
-            is_admin = request.user.is_superuser or getattr(request.user, 'isSuperAdmin', False) or 'attendance:admin' in user_perms or 'attendance:management_portal' in user_perms
+            from core.decorators import has_fine_grained_permission
+            is_admin = has_fine_grained_permission(request.user, ['attendance:admin', 'attendance:management_portal'])
             if not is_admin:
                 return Response({'error': 'You do not have permission to clock in on behalf of other employees'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -109,47 +116,147 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         if employee.organization != request.user.organization:
             return Response({'error': 'Employee not found in your organization'}, status=status.HTTP_403_FORBIDDEN)
 
-        today = datetime_date.today()
+        # Employment Eligibility Validation
+        today = timezone.now().date()
+        if not employee.is_active or getattr(employee, 'employment_status', 'Active') == 'Deactivated':
+            return Response({'error': 'Clock In is not available because your employee account is inactive.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if already clocked in today (and not clocked out)
-        active_log = AttendanceLog.objects.filter(employee=employee, date=today, clockOut__isnull=True).first()
-        if active_log:
-            return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
+        if employee.joining_date and today < employee.joining_date:
+            return Response({'error': 'Clock In is not available before your joining date.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        now = timezone.now()
+        if employee.last_working_date and today > employee.last_working_date:
+            return Response({'error': 'Clock In is not available after your last working date.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        coords = {}
-        photo = None
-        if verification_data := request.data.get('verificationData'):
-            coords = verification_data.get('coords', {})
-            photo = verification_data.get('photo')
+        verification_data = request.data.get('verificationData') or {}
+        coords = verification_data.get('coords', {}) if isinstance(verification_data, dict) else {}
+        photo = verification_data.get('photo') if isinstance(verification_data, dict) else None
+
+        has_valid_photo = (
+            isinstance(photo, str) and
+            bool(photo.strip()) and
+            photo.startswith('data:image/') and
+            len(photo) >= 50
+        )
 
         org = employee.organization
-        auto_approve = False
-        if org and org.settings:
-            auto_approve = getattr(org.settings, 'auto_approve_attendance', False)
+        locations = list(OfficeLocation.objects.filter(organization=org))
 
-        initial_status = 'Approved' if auto_approve else 'Pending Approval'
+        verification_method = None
+        is_geofence_verified = False
 
-        log = AttendanceLog.objects.create(
-            employee=employee,
-            employeeName=f"{employee.first_name} {employee.last_name}".strip() or employee.email,
-            date=today,
-            clockIn=now,
-            clockOut=None,
-            totalDuration="0",
-            verificationPhoto=photo,
-            verificationLocation=coords,
-            status=initial_status
-        )
+        if locations:
+            # Validate office locations configuration
+            for loc in locations:
+                if (
+                    loc.lat is None or not (-90.0 <= float(loc.lat) <= 90.0) or
+                    loc.lon is None or not (-180.0 <= float(loc.lon) <= 180.0) or
+                    loc.radius is None or float(loc.radius) <= 0
+                ):
+                    return Response(
+                        {'error': f"Office location '{loc.name}' configuration needs attention: invalid coordinates ({loc.lat}, {loc.lon}) or radius ({loc.radius})."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
-        # Log clock-in event
-        AuditLog.objects.create(
-            employee=employee,
-            employeeName=f"{employee.first_name} {employee.last_name}".strip() or employee.email,
-            action="Clocked In",
-            details=f"Employee clocked in at {now.strftime('%H:%M:%S')}."
-        )
+            lat = coords.get('lat') if isinstance(coords, dict) else None
+            lon = coords.get('lon') if isinstance(coords, dict) else None
+
+            if lat is not None and lon is not None:
+                try:
+                    lat_val = float(lat)
+                    lon_val = float(lon)
+                    if -90.0 <= lat_val <= 90.0 and -180.0 <= lon_val <= 180.0:
+                        import math
+                        def calculate_haversine(lat1, lon1, lat2, lon2):
+                            R = 6371000.0  # Earth radius in meters
+                            dlat = math.radians(lat2 - lat1)
+                            dlon = math.radians(lon2 - lon1)
+                            a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+                            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                            return R * c
+
+                        min_dist = float('inf')
+                        nearest_loc = None
+                        for loc in locations:
+                            dist = calculate_haversine(lat_val, lon_val, loc.lat, loc.lon)
+                            if dist < min_dist:
+                                min_dist = dist
+                                nearest_loc = loc
+                            if dist <= loc.radius:
+                                is_geofence_verified = True
+                                break
+
+                        if not is_geofence_verified and nearest_loc is not None:
+                            # If within office vicinity (up to 50 km), strict geofence is enforced regardless of photo
+                            if min_dist <= 50000:
+                                dist_km = min_dist / 1000.0
+                                return Response(
+                                    {'error': f"Outside office geofence. You are outside the allowed Clock In area for {nearest_loc.name}. You are {dist_km:.1f} km from the office (allowed radius: {int(nearest_loc.radius)}m)."},
+                                    status=status.HTTP_400_BAD_REQUEST
+                                )
+                except (ValueError, TypeError):
+                    is_geofence_verified = False
+        else:
+            # Organization has no OfficeLocation configured -> Direct/Remote clock-in with valid GPS coordinates is verified by location
+            lat = coords.get('lat') if isinstance(coords, dict) else None
+            lon = coords.get('lon') if isinstance(coords, dict) else None
+            if lat is not None and lon is not None:
+                try:
+                    lat_val = float(lat)
+                    lon_val = float(lon)
+                    if not (lat_val == 0.0 and lon_val == 0.0) and -90.0 <= lat_val <= 90.0 and -180.0 <= lon_val <= 180.0:
+                        is_geofence_verified = True
+                except (ValueError, TypeError):
+                    is_geofence_verified = False
+
+        # VERIFICATION SECURITY RULE: VALID LOCATION OR VALID CAMERA FALLBACK PHOTO
+        if is_geofence_verified:
+            verification_method = 'Location'
+        elif has_valid_photo:
+            verification_method = 'Camera Fallback'
+        else:
+            return Response(
+                {'error': 'Clock in failed: Verification photo is required when outside office geofence or location is unavailable.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        today = timezone.now().date()
+
+        from django.db import transaction
+        with transaction.atomic():
+            # Check if already clocked in today (and not clocked out)
+            active_log = AttendanceLog.objects.select_for_update().filter(employee=employee, date=today, clockOut__isnull=True).first()
+            if active_log:
+                return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+            policy = get_attendance_policy(org, today) if org else None
+            auto_approve = policy.auto_approve_attendance if policy else False
+
+            initial_status = 'Approved' if auto_approve else 'Pending Approval'
+
+            log_coords = dict(coords) if isinstance(coords, dict) else {}
+            log_coords['verification_method'] = verification_method
+
+            log = AttendanceLog.objects.create(
+                employee=employee,
+                employeeName=f"{employee.first_name} {employee.last_name}".strip() or employee.email,
+                date=today,
+                clockIn=now,
+                clockOut=None,
+                totalDuration="0",
+                verificationPhoto=photo if has_valid_photo else None,
+                verificationLocation=log_coords,
+                status=initial_status
+            )
+
+            # Log clock-in event
+            AuditLog.objects.create(
+                organization=org,
+                employee=employee,
+                employeeName=f"{employee.first_name} {employee.last_name}".strip() or employee.email,
+                action="Clocked In",
+                details=f"Employee clocked in at {now.strftime('%H:%M:%S')}."
+            )
 
         serializer = self.get_serializer(log)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -159,8 +266,8 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         employee_id = request.data.get('employeeId') or request.user.id
         # Prevent IDOR
         if int(employee_id) != request.user.id:
-            user_perms = getattr(request.user, 'permissions', [])
-            is_admin = request.user.is_superuser or getattr(request.user, 'isSuperAdmin', False) or 'attendance:admin' in user_perms or 'attendance:management_portal' in user_perms
+            from core.decorators import has_fine_grained_permission
+            is_admin = has_fine_grained_permission(request.user, ['attendance:admin', 'attendance:management_portal'])
             if not is_admin:
                 return Response({'error': 'You do not have permission to clock out on behalf of other employees'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -178,7 +285,44 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         if not log:
             return Response({'error': 'No active clock-in session found'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if is_date_locked(employee.organization, log.date):
+            return Response({'error': f'Attendance for {log.date.strftime("%B %Y")} is finalized and locked. Reopen the period to make changes.'}, status=status.HTTP_400_BAD_REQUEST)
+
         now = timezone.now()
+        policy = get_attendance_policy(employee.organization, log.date)
+        min_session_minutes = policy.minimum_session_minutes if policy else 5
+
+        # Check minimum session duration before clocking out
+        if log.clockIn:
+            elapsed_seconds = max(0, int((now - log.clockIn).total_seconds()))
+            required_seconds = min_session_minutes * 60
+            if elapsed_seconds < required_seconds:
+                remaining_seconds = required_seconds - elapsed_seconds
+                earliest_clock_out = log.clockIn + timedelta(minutes=min_session_minutes)
+                clock_in_local = timezone.localtime(log.clockIn)
+                earliest_local = timezone.localtime(earliest_clock_out)
+
+                clock_in_time_str = clock_in_local.strftime('%I:%M %p').lstrip('0')
+                earliest_time_str = earliest_local.strftime('%I:%M %p').lstrip('0')
+
+                # Log controlled audit event for rejected early attempt
+                AuditLog.objects.create(
+                    organization=employee.organization,
+                    employee=request.user,
+                    employeeName=f"{request.user.first_name} {request.user.last_name}".strip() or request.user.email,
+                    action="Clock-Out Attempt Rejected",
+                    details=f"Clock-out rejected for {employee.first_name}: Session duration ({elapsed_seconds // 60}m {elapsed_seconds % 60}s) is below minimum required ({min_session_minutes}m)."
+                )
+
+                return Response({
+                    'error': f"Minimum work session duration is {min_session_minutes} minutes. You clocked in at {clock_in_time_str}. You can clock out after {earliest_time_str}.",
+                    'reason': 'minimum_session_not_reached',
+                    'minimum_session_minutes': min_session_minutes,
+                    'clock_in_time': log.clockIn.isoformat(),
+                    'earliest_clock_out_time': earliest_clock_out.isoformat(),
+                    'remaining_seconds': remaining_seconds,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
         log.clockOut = now
 
         # Calculate duration in seconds
@@ -196,6 +340,7 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
         AuditLog.objects.create(
+            organization=employee.organization,
             employee=employee,
             employeeName=f"{employee.first_name} {employee.last_name}".strip() or employee.email,
             action="Clocked Out",
@@ -205,21 +350,62 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         serializer = self.get_serializer(log)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def perform_create(self, serializer):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        target_date = serializer.validated_data.get('date')
+        if is_date_locked(org, target_date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': f'Attendance for {target_date.strftime("%B %Y")} is finalized and locked. Reopen the period to make changes.'})
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        orig_date = serializer.instance.date
+        new_date = serializer.validated_data.get('date', orig_date)
+        if is_date_locked(org, orig_date) or is_date_locked(org, new_date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Attendance for this period is finalized and locked. Reopen the period to make changes.'})
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        if is_date_locked(org, instance.date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': f'Attendance for {instance.date.strftime("%B %Y")} is finalized and locked. Reopen the period to make changes.'})
+        instance.is_deleted = True
+        instance.save()
+
 
 # --------------------------------------------------------------------------------
 # AttendanceApprovalView: API endpoint for managers to approve or reject employee clock logs.
 # --------------------------------------------------------------------------------
 class AttendanceApprovalView(APIView):
-    permission_classes = [permissions.IsAuthenticated, HasRequiredPermission]
+    permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission]
+    required_plan_feature = 'is_attendance_enabled'
     required_permission = ['attendance:admin', 'attendance:management_portal']
 
     ALLOWED_STATUSES = ['Approved', 'Late', 'Half Day', 'Absent', 'Pending Approval']
 
     def patch(self, request, pk):
+        active_org = getattr(request, 'active_organization', None)
+        if not active_org:
+            return Response({'error': 'Attendance log not found.'}, status=status.HTTP_404_NOT_FOUND)
+        from django.db.models import Q
         try:
-            log = AttendanceLog.objects.get(pk=pk, employee__organization=request.user.organization)
+            log = AttendanceLog.objects.filter(
+                Q(pk=pk) & (
+                    Q(employee__organization=active_org) |
+                    Q(employee__memberships__organization=active_org, employee__memberships__is_active_in_org=True)
+                )
+            ).distinct().get()
         except AttendanceLog.DoesNotExist:
             return Response({'error': 'Attendance log not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if is_date_locked(active_org, log.date):
+            return Response({'error': f'Attendance for {log.date.strftime("%B %Y")} is finalized and locked. Reopen the period to make changes.'}, status=status.HTTP_400_BAD_REQUEST)
 
         new_status = request.data.get('status')
         if new_status not in self.ALLOWED_STATUSES:
@@ -256,78 +442,89 @@ class HRAttendanceDashboardView(APIView):
     required_permission = ['attendance:admin', 'attendance:management_portal']
 
     def get(self, request):
-        today = datetime_date.today()
+        date_str = request.query_params.get('date')
+        if date_str:
+            try:
+                today = datetime_date.fromisoformat(date_str)
+            except ValueError:
+                today = timezone.now().date()
+        else:
+            today = timezone.now().date()
         org = request.user.organization
+        if not org:
+            return Response({'error': 'User does not belong to an organization.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        org_settings = OrgSettings.objects.filter(organization=org).first()
-        grace_minutes = getattr(org_settings, 'grace_period_minutes', 15) if org_settings else 15
+        policy = get_attendance_policy(org, today)
+        grace_minutes = policy.grace_period_minutes if policy else 15
 
-        all_employees = Employee.objects.filter(organization=org, is_active=True)
-
-        today_logs = AttendanceLog.objects.filter(
-            employee__organization=org, date=today
-        ).select_related('employee')
-        logged_employee_ids = set(log.employee_id for log in today_logs)
-
-        on_leave_today = Leave.objects.filter(
-            employee__organization=org,
-            startDate__lte=today,
-            endDate__gte=today,
-            status='Approved'
-        ).select_related('employee')
-        on_leave_employee_ids = set(lv.employee_id for lv in on_leave_today)
+        all_employees = Employee.objects.filter(organization=org, is_active=True).order_by('first_name', 'last_name')
 
         pending_list = []
         late_list = []
-
-        for log in today_logs:
-            emp = log.employee
-            entry = {
-                'id': log.id,
-                'employeeName': log.employeeName or f"{emp.first_name} {emp.last_name}".strip(),
-                'employeeDesignation': emp.designation or '',
-                'clockIn': log.clockIn.isoformat() if log.clockIn else None,
-                'status': log.status,
-            }
-
-            minutes_late = 0
-            schedule = Schedule.objects.filter(designation=emp.designation).first()
-            if schedule and log.clockIn:
-                try:
-                    shift_h, shift_m = map(int, schedule.shiftStart.split(':'))
-                    shift_start = log.clockIn.replace(hour=shift_h, minute=shift_m, second=0, microsecond=0)
-                    grace_end = shift_start + timedelta(minutes=grace_minutes)
-                    if log.clockIn > grace_end:
-                        diff = log.clockIn - shift_start
-                        minutes_late = int(diff.total_seconds() // 60)
-                except Exception:
-                    pass
-
-            if minutes_late > 0:
-                entry['minutesLate'] = minutes_late
-                entry['shiftStart'] = schedule.shiftStart if schedule else None
-                late_list.append(entry)
-
-            if log.status == 'Pending Approval':
-                pending_list.append(entry)
-
         on_leave_list = []
-        for lv in on_leave_today:
-            on_leave_list.append({
-                'id': lv.id,
-                'employeeName': lv.employeeName or f"{lv.employee.first_name} {lv.employee.last_name}".strip(),
-                'employeeDesignation': lv.employee.designation or '',
-                'leaveTypeName': lv.leaveTypeName or '',
-                'dayType': lv.dayType or 'Full Day',
-            })
-
         absent_list = []
+        needs_review_list = []
+        present_count = 0
+        half_day_count = 0
+
         for emp in all_employees:
-            if emp.id not in logged_employee_ids and emp.id not in on_leave_employee_ids:
+            summary = get_daily_attendance_summary(emp, today, policy=policy)
+
+            if summary['daily_status'] == 'Present':
+                present_count += 1
+            elif summary['daily_status'] == 'Half Day':
+                half_day_count += 1
+
+            if summary['daily_status'] in ['Absent', 'Not Started']:
                 absent_list.append({
                     'id': emp.id,
-                    'employeeName': f"{emp.first_name} {emp.last_name}".strip() or emp.email,
+                    'employeeName': summary['employee_name'],
                     'employeeDesignation': emp.designation or '',
+                })
+
+            if summary['is_late']:
+                late_list.append({
+                    'id': emp.id,
+                    'employeeName': summary['employee_name'],
+                    'employeeDesignation': emp.designation or '',
+                    'clockIn': summary['first_clock_in'],
+                    'minutesLate': summary['minutes_late'],
+                    'shiftStart': summary['shift_start'],
+                    'status': summary['daily_status'],
+                })
+
+            if summary['has_pending_approval']:
+                pending_logs = AttendanceLog.objects.filter(
+                    employee=emp, date=today, status='Pending Approval', is_deleted=False
+                )
+                for pl in pending_logs:
+                    pending_list.append({
+                        'id': pl.id,
+                        'employeeId': emp.id,
+                        'employeeName': summary['employee_name'],
+                        'employeeDesignation': emp.designation or '',
+                        'clockIn': pl.clockIn.isoformat() if pl.clockIn else None,
+                        'status': 'Pending Approval',
+                    })
+
+            if summary['leave_fraction'] > 0 or summary['daily_status'] == 'Leave':
+                on_leave_list.append({
+                    'id': emp.id,
+                    'employeeName': summary['employee_name'],
+                    'employeeDesignation': emp.designation or '',
+                    'leaveTypeName': summary['leave_type'] or 'Leave',
+                    'dayType': 'Half Day' if summary['leave_fraction'] == 0.5 else 'Full Day',
+                })
+
+            if not summary['is_payroll_ready']:
+                needs_review_list.append({
+                    'id': emp.id,
+                    'employeeName': summary['employee_name'],
+                    'employeeDesignation': emp.designation or '',
+                    'conflictReason': summary['conflict_reason'],
+                    'requiresAdminResolution': summary['requires_admin_resolution'],
+                    'hasPendingApproval': summary['has_pending_approval'],
+                    'dailyStatus': summary['daily_status'],
                 })
 
         return Response({
@@ -337,11 +534,15 @@ class HRAttendanceDashboardView(APIView):
             'late': late_list,
             'on_leave': on_leave_list,
             'absent': absent_list,
+            'needs_review': needs_review_list,
             'summary': {
                 'pendingCount': len(pending_list),
                 'lateCount': len(late_list),
                 'onLeaveCount': len(on_leave_list),
                 'absentCount': len(absent_list),
+                'needsReviewCount': len(needs_review_list),
+                'presentCount': present_count,
+                'halfDayCount': half_day_count,
             }
         }, status=status.HTTP_200_OK)
 
@@ -530,6 +731,34 @@ class HolidayViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetM
         serializer = self.get_serializer(merged_list, many=True)
         return Response(serializer.data)
 
+    def perform_create(self, serializer):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        target_date = serializer.validated_data.get('date')
+        if is_date_locked(org, target_date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Holidays cannot be created for a finalized attendance period.'})
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        orig_date = serializer.instance.date
+        new_date = serializer.validated_data.get('date', orig_date)
+        if is_date_locked(org, orig_date) or is_date_locked(org, new_date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Holidays cannot be modified for a finalized attendance period.'})
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        if is_date_locked(org, instance.date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Holidays cannot be deleted for a finalized attendance period.'})
+        super().perform_destroy(instance)
+
+
 
 # --------------------------------------------------------------------------------
 # HolidaySettingsView: API view configuring recurring monthly and yearly holiday templates.
@@ -669,6 +898,56 @@ class ScheduleViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSet
             self.required_permission = ['attendance:management_portal']
         return super().get_permissions()
 
+    def perform_create(self, serializer):
+        user = self.request.user
+        org = getattr(user, 'organization', None) if user.is_authenticated else None
+        serializer.save(organization=org)
+
+
+# --------------------------------------------------------------------------------
+# AttendancePolicyViewSet: ViewSet managing versioned organization attendance policies.
+# --------------------------------------------------------------------------------
+class AttendancePolicyViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+    queryset = AttendancePolicy.objects.all().order_by('-effective_from')
+    serializer_class = AttendancePolicySerializer
+
+    required_plan_feature = 'is_attendance_enabled'
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'current_policy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'create': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'partial_update': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+        'destroy': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired, HasRequiredPermission],
+    }
+
+    def get_permissions(self):
+        if self.action in ['list', 'retrieve', 'current_policy'] and self.request.method == 'GET':
+            self.required_permission = None
+        else:
+            self.required_permission = ['attendance:management_portal', 'attendance:admin']
+        return super().get_permissions()
+
+    @action(detail=False, methods=['get', 'post', 'put', 'patch'], url_path='current')
+    def current_policy(self, request):
+        org = getattr(request.user, 'organization', None)
+        if not org:
+            return Response({'error': 'User does not belong to an organization.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.method in ['POST', 'PUT', 'PATCH']:
+            policy, created = save_attendance_policy(org, request.data)
+            serializer = self.get_serializer(policy)
+            return Response({
+                **serializer.data,
+                'message': 'These attendance rules will apply from tomorrow.',
+                'is_new_version': created
+            }, status=status.HTTP_200_OK)
+
+        policy = get_attendance_policy(org)
+        serializer = self.get_serializer(policy)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 
 # --------------------------------------------------------------------------------
@@ -725,7 +1004,6 @@ class OrgSettingsViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
             if sub and sub.expiresAt:
                 delta = sub.expiresAt - timezone.now()
                 instance.subscriptionDays = max(0, delta.days)
-                instance.save()
 
         if request.method in ['PUT', 'PATCH']:
             new_days = request.data.get('subscriptionDays')
@@ -771,6 +1049,7 @@ class AuditLogViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
             action_type = self.request.query_params.get('action')
             date_str = self.request.query_params.get('date')
             org_id = self.request.query_params.get('organization_id')
+            search_q = self.request.query_params.get('search')
 
             if org_id and user.organization is None:
                 qs = qs.filter(organization_id=org_id)
@@ -784,6 +1063,15 @@ class AuditLogViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
                     qs = qs.filter(createdAt__date=target_date)
                 except ValueError:
                     pass
+            if search_q:
+                qs = qs.filter(
+                    Q(action__icontains=search_q) |
+                    Q(details__icontains=search_q) |
+                    Q(employeeName__icontains=search_q) |
+                    Q(employee__email__icontains=search_q) |
+                    Q(employee__first_name__icontains=search_q) |
+                    Q(employee__last_name__icontains=search_q)
+                )
         return qs
 
 
@@ -891,9 +1179,9 @@ class LeaveViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMix
     def get_queryset(self):
         qs = super().get_queryset()
         user = self.request.user
-        if user.is_authenticated and not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
-            user_perms = getattr(user, 'permissions', [])
-            if 'leaves:approve' not in user_perms and 'leaves:manage' not in user_perms:
+        if user.is_authenticated:
+            from core.decorators import has_fine_grained_permission
+            if not has_fine_grained_permission(user, ['leaves:approve', 'leaves:manage']):
                 qs = qs.filter(employee=user)
         return qs
 
@@ -903,8 +1191,14 @@ class LeaveViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMix
 
 
     def perform_create(self, serializer):
-        leave = serializer.save()
         user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        start_date = serializer.validated_data.get('startDate')
+        end_date = serializer.validated_data.get('endDate', start_date)
+        if is_date_range_locked(org, start_date, end_date):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Leave cannot be applied for a finalized attendance period.'})
+        leave = serializer.save()
         actor_name = f"{user.first_name} {user.last_name}".strip() or user.email
         AuditLog.objects.create(
             employee=user,
@@ -913,12 +1207,34 @@ class LeaveViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMix
             details=f"Applied for {leave.leaveTypeName} leave from {leave.startDate} to {leave.endDate} ({leave.duration} days)."
         )
 
-        # Leave notification email code path has been removed per instructions.
-        pass
+    def perform_update(self, serializer):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        orig_start = serializer.instance.startDate
+        orig_end = serializer.instance.endDate
+        new_start = serializer.validated_data.get('startDate', orig_start)
+        new_end = serializer.validated_data.get('endDate', orig_end)
+        if is_date_range_locked(org, orig_start, orig_end) or is_date_range_locked(org, new_start, new_end):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Leave cannot be modified for a finalized attendance period.'})
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        if is_date_range_locked(org, instance.startDate, instance.endDate):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'detail': 'Leave cannot be deleted for a finalized attendance period.'})
+        super().perform_destroy(instance)
 
     @action(detail=True, methods=['patch'], url_path='status')
     def update_status(self, request, pk=None):
         leave = self.get_object()
+        user = self.request.user
+        org = user.organization if user.is_authenticated else None
+        if is_date_range_locked(org, leave.startDate, leave.endDate):
+            return Response({'error': 'Leave status cannot be modified for a finalized attendance period.'}, status=status.HTTP_400_BAD_REQUEST)
+
         new_status = request.data.get('status')
         if new_status not in ['Approved', 'Rejected', 'Pending']:
             return Response({'error': 'Invalid status value'}, status=status.HTTP_400_BAD_REQUEST)
@@ -955,6 +1271,237 @@ class LeaveViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMix
 
         serializer = self.get_serializer(leave)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+# --------------------------------------------------------------------------------
+# DailyAttendanceSummaryView: Authoritative Daily Attendance Calculation API
+# --------------------------------------------------------------------------------
+class DailyAttendanceSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired]
+    required_plan_feature = 'is_attendance_enabled'
+
+    def get(self, request):
+        user = request.user
+        emp_id = request.query_params.get('employee_id')
+        date_str = request.query_params.get('date')
+        month_str = request.query_params.get('month')
+
+        if not user.organization:
+            return Response({'error': 'User does not belong to an organization.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Tenant-safe employee resolution
+        if emp_id and str(emp_id) != str(user.id):
+            emp = Employee.objects.filter(id=emp_id, organization=user.organization, is_active=True).first()
+            if not emp:
+                return Response({'error': 'Employee not found in your organization.'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            emp = user
+
+        if month_str:
+            try:
+                y, m = map(int, month_str.split('-'))
+                summaries = get_monthly_attendance_summary(emp, y, m)
+                return Response(summaries, status=status.HTTP_200_OK)
+            except Exception as e:
+                return Response({'error': f'Invalid month format. Expected YYYY-MM.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not date_str:
+            target_date = timezone.now().date()
+        else:
+            try:
+                target_date = datetime_date.fromisoformat(date_str)
+            except Exception:
+                return Response({'error': 'Invalid date format. Expected YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        summary = get_daily_attendance_summary(emp, target_date)
+        return Response(summary, status=status.HTTP_200_OK)
+
+
+# --------------------------------------------------------------------------------
+# AttendancePeriodViewSet: Monthly Attendance Finalization, Validation, & Snapshots
+# --------------------------------------------------------------------------------
+class AttendancePeriodViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetMixin, viewsets.ModelViewSet):
+    queryset = AttendancePeriod.objects.all().order_by('-year', '-month')
+    serializer_class = AttendancePeriodSerializer
+    permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired]
+    required_plan_feature = 'is_attendance_enabled'
+
+    permission_classes_by_action = {
+        'list': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'retrieve': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'period_summary': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'snapshots': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'finalize': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+        'reopen': [permissions.IsAuthenticated, DRFCheckModePermission, DRFPlanPermissionRequired],
+    }
+
+    def get_queryset(self):
+        qs = super().get_queryset().filter(is_deleted=False)
+        user = self.request.user
+        if user.is_authenticated and user.organization:
+            qs = qs.filter(organization=user.organization)
+        return qs
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def period_summary(self, request):
+        """
+        GET /api/attendance/periods/summary/?year=2026&month=8
+        Returns period record, validation status, readiness counts, and blocking issues list.
+        """
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        if not year or not month:
+            return Response({'error': 'year and month query parameters are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            year = int(year)
+            month = int(month)
+        except ValueError:
+            return Response({'error': 'Invalid year or month.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        org = request.user.organization
+        period = AttendancePeriod.objects.filter(
+            organization=org,
+            year=year,
+            month=month,
+            is_deleted=False
+        ).first()
+
+        validation = validate_attendance_period(org, year, month)
+
+        period_data = AttendancePeriodSerializer(period).data if period else {
+            'year': year,
+            'month': month,
+            'status': 'Draft',
+            'current_revision': 0,
+            'total_employees': validation['total_employees'],
+            'payroll_ready_count': validation['payroll_ready_count'],
+            'needs_review_count': validation['needs_review_count'],
+            'finalized_at': None,
+            'finalized_by': None,
+            'finalized_by_name': None,
+            'reopened_at': None,
+            'reopened_by_name': None,
+            'reopen_reason': None,
+        }
+
+        return Response({
+            'period': period_data,
+            'validation': {
+                'is_clean': validation['is_clean'],
+                'is_past_month': validation['is_past_month'],
+                'total_employees': validation['total_employees'],
+                'payroll_ready_count': validation['payroll_ready_count'],
+                'needs_review_count': validation['needs_review_count'],
+                'issues': validation['issues']
+            }
+        })
+
+    @action(detail=False, methods=['post'], url_path='finalize')
+    def finalize(self, request):
+        """
+        POST /api/attendance/periods/finalize/
+        Body: { "year": 2026, "month": 7 }
+        """
+        from core.decorators import has_fine_grained_permission
+        is_admin = has_fine_grained_permission(request.user, ['attendance:admin'])
+        if not is_admin:
+            return Response({'error': 'You do not have permission to finalize attendance periods.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = FinalizePeriodSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        year = serializer.validated_data['year']
+        month = serializer.validated_data['month']
+
+        org = request.user.organization
+        period = finalize_attendance_period(org, year, month, request.user)
+        return Response(AttendancePeriodSerializer(period).data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='reopen')
+    def reopen(self, request):
+        """
+        POST /api/attendance/periods/reopen/
+        Body: { "year": 2026, "month": 7, "reason": "Corrected Alice overtime punch" }
+        """
+        from core.decorators import has_fine_grained_permission
+        is_admin = has_fine_grained_permission(request.user, ['attendance:admin'])
+        if not is_admin:
+            return Response({'error': 'You do not have permission to reopen attendance periods.'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = ReopenPeriodSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data['reason']
+
+        year = request.data.get('year')
+        month = request.data.get('month')
+
+        if not year or not month:
+            return Response({'error': 'year and month are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            year = int(year)
+            month = int(month)
+        except ValueError:
+            return Response({'error': 'Invalid year or month.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        org = request.user.organization
+        period = reopen_attendance_period(org, year, month, request.user, reason)
+        return Response(AttendancePeriodSerializer(period).data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='snapshots')
+    def snapshots(self, request):
+        """
+        GET /api/attendance/periods/snapshots/?year=2026&month=7&revision=1
+        Returns employee snapshots.
+        """
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        revision = request.query_params.get('revision')
+        employee_id = request.query_params.get('employee_id')
+
+        if not year or not month:
+            return Response({'error': 'year and month query parameters are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            year = int(year)
+            month = int(month)
+        except ValueError:
+            return Response({'error': 'Invalid year or month.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        org = request.user.organization
+        period = AttendancePeriod.objects.filter(
+            organization=org,
+            year=year,
+            month=month,
+            is_deleted=False
+        ).first()
+
+        if not period:
+            return Response([], status=status.HTTP_200_OK)
+
+        qs = AttendancePeriodEmployeeSnapshot.objects.filter(
+            attendance_period=period,
+            is_deleted=False
+        )
+
+        if revision:
+            try:
+                rev_num = int(revision)
+                qs = qs.filter(revision=rev_num)
+            except ValueError:
+                pass
+        else:
+            qs = qs.filter(is_current=True)
+
+        user = request.user
+        from core.decorators import has_fine_grained_permission
+        can_view_all = has_fine_grained_permission(user, ['attendance:admin', 'attendance:management_portal'])
+        if not can_view_all:
+            qs = qs.filter(employee=user)
+        elif employee_id:
+            qs = qs.filter(employee_id=employee_id)
+
+        serializer = AttendancePeriodEmployeeSnapshotSerializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 
 
 # Misc backoffice HTML views
