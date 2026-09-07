@@ -5,7 +5,7 @@
 # STANDARD LIBRARY
 
 # DJANGO
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_delete
 from django.dispatch import receiver
 
 # THIRD PARTY
@@ -13,7 +13,6 @@ from django.dispatch import receiver
 # APPLICATION SPECIFIC
 from users.models import Employee
 from subscribers.models import SubscriberAccount
-from users.api.v1.services import UserService
 
 # Note: Generic welcome email signal disabled to avoid duplicate emails during administrative onboarding.
 # Administrative employee creation explicitly dispatches single onboarding credential email.

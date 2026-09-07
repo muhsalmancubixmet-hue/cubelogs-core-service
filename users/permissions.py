@@ -1,5 +1,3 @@
-from rest_framework import permissions
-
 def check_backoffice_staff_management(view, request):
     """
     Validates if a backoffice staff operator has the 'staff' permission flag.

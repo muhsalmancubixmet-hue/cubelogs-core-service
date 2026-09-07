@@ -9,7 +9,6 @@ from django.urls import path, include
 
 # THIRD PARTY
 from rest_framework.routers import DefaultRouter
-from rest_framework_simplejwt.views import TokenRefreshView
 
 # APPLICATION SPECIFIC
 from users.api.v1.views import (
@@ -18,7 +17,6 @@ from users.api.v1.views import (
     PasswordResetValidateView, PasswordResetConfirmView, PermissionsConfigView,
     backoffice_view, backoffice_login_view, CustomTokenRefreshView, LogoutView
 )
-from users.api.v1.serializers import CustomTokenRefreshSerializer
 
 router = DefaultRouter()
 router.register('employees', EmployeeViewSet, basename='employee')

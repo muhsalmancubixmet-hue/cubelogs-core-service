@@ -13,7 +13,6 @@ from django.template.loader import render_to_string
 # THIRD PARTY
 
 # APPLICATION SPECIFIC
-from core.utils import generate_secure_password
 from core.tasks import EmailService
 
 logger = logging.getLogger(__name__)
@@ -204,19 +203,3 @@ class UserService:
             }
         )
         EmailService.send_transactional_email(employee.email, subject, html_message, 'WELCOME', raw_password, synchronous=synchronous)
-
-    @staticmethod
-    def provision_employee(employee, request_user=None, raw_password=None, synchronous=False):
-        """
-        Post-creation hook: set organisation, generate password if needed,
-        and send the admin onboarding email.
-
-        This is called from EmployeeSerializer.create() to keep the serializer thin.
-        """
-        if request_user and request_user.is_authenticated:
-            if not (request_user.isSuperAdmin and request_user.organization is None):
-                employee.organization = request_user.organization
-                employee.save(update_fields=['organization'])
-
-        if raw_password:
-            UserService.send_admin_onboarding_email(employee, raw_password, synchronous=synchronous)

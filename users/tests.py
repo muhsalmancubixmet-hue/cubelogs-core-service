@@ -1028,6 +1028,157 @@ class RoleSecurityRegressionTest(APITestCase):
         self.assertIn(self.role_b.id, role_ids)
         self.assertIn(self.global_role.id, role_ids)
 
+    def test_active_organization_membership_blocks_role_deletion(self):
+        # 10. Role assigned to an ACTIVE OrganizationMembership cannot be deleted
+        from users.models import Role
+        target_role = Role.objects.create(
+            name="Org A Protected Role",
+            slug="org-a-protected-role",
+            is_system_role=False,
+            organization=self.org_a
+        )
+        emp_x = Employee.objects.create_user(
+            email="emp_x_protect@example.com",
+            password="password123",
+            first_name="Employee",
+            last_name="X",
+            organization=self.org_a,
+            role=None  # Explicitly ensure Employee.role does NOT point to target_role
+        )
+        mem_x = OrganizationMembership.objects.create(
+            user=emp_x,
+            organization=self.org_a,
+            role=target_role,
+            is_active_in_org=True,
+            is_deleted=False
+        )
+
+        self.client.force_authenticate(user=self.admin_a)
+        res_del = self.client.delete(f'/api/roles/{target_role.id}/')
+
+        # Deletion must be rejected with HTTP 400
+        self.assertEqual(res_del.status_code, 400)
+        self.assertIn("detail", res_del.data)
+        self.assertIn("reassign", res_del.data["detail"].lower())
+
+        # Role must still exist
+        self.assertTrue(Role.objects.filter(id=target_role.id).exists())
+
+        # Membership role must still point to target_role (not silently nulled)
+        mem_x.refresh_from_db()
+        self.assertEqual(mem_x.role_id, target_role.id)
+
+    def test_unassigned_custom_role_can_be_deleted(self):
+        # 11. Unassigned custom role with 0 active memberships and 0 legacy employees can be deleted
+        from users.models import Role
+        unassigned_role = Role.objects.create(
+            name="Org A Unassigned Role",
+            slug="org-a-unassigned-role",
+            is_system_role=False,
+            organization=self.org_a
+        )
+
+        self.client.force_authenticate(user=self.admin_a)
+        res_del = self.client.delete(f'/api/roles/{unassigned_role.id}/')
+
+        # Deletion must succeed with HTTP 204
+        self.assertEqual(res_del.status_code, 204)
+        unassigned_role.refresh_from_db()
+        self.assertTrue(unassigned_role.is_deleted)
+        self.assertFalse(Role.active_objects.filter(id=unassigned_role.id).exists())
+
+
+class RevokeRegistrationTokenRegressionTest(APITestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Revoke Test Org", subdomain="revoke-test")
+        self.employee = Employee.objects.create_user(
+            email="revoke_target@example.com",
+            password="testpassword123",
+            first_name="Revoke",
+            last_name="Target",
+            organization=self.org
+        )
+        self.membership = OrganizationMembership.objects.create(
+            user=self.employee,
+            organization=self.org,
+            is_active_in_org=True
+        )
+
+    def test_valid_production_salt_token_revokes_registration(self):
+        # 1. Sign token using production salt contract (matches UserService.send_admin_onboarding_email)
+        signer = TimestampSigner(salt='revoke-registration')
+        valid_token = signer.sign(str(self.employee.id))
+
+        response = self.client.post("/api/employees/revoke/", {"token": valid_token}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data.get("message"), "Registration successfully revoked.")
+
+        # Confirm employee was deleted (single membership)
+        self.assertFalse(Employee.objects.filter(id=self.employee.id).exists())
+
+    def test_wrong_salt_token_is_rejected(self):
+        # 2. Token signed with wrong/default salt must be rejected with HTTP 400
+        default_signer = TimestampSigner()  # Old broken default salt
+        wrong_salt_token = default_signer.sign(str(self.employee.id))
+
+        response = self.client.post("/api/employees/revoke/", {"token": wrong_salt_token}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data.get("error"), "Invalid revocation link.")
+
+        # Confirm employee was NOT deleted or altered
+        self.assertTrue(Employee.objects.filter(id=self.employee.id).exists())
+
+    def test_arbitrary_salt_token_is_rejected(self):
+        # 3. Forged token with arbitrary salt must be rejected
+        forged_signer = TimestampSigner(salt='attacker-salt')
+        forged_token = forged_signer.sign(str(self.employee.id))
+
+        response = self.client.post("/api/employees/revoke/", {"token": forged_token}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data.get("error"), "Invalid revocation link.")
+        self.assertTrue(Employee.objects.filter(id=self.employee.id).exists())
+
+    def test_missing_token_returns_400(self):
+        # 4. Empty payload returns 400
+        response = self.client.post("/api/employees/revoke/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data.get("error"), "Token is required")
+
+    def test_nonexistent_employee_token_returns_404(self):
+        # 5. Valid signature but non-existent employee id returns 404
+        signer = TimestampSigner(salt='revoke-registration')
+        token = signer.sign("99999999")
+
+        response = self.client.post("/api/employees/revoke/", {"token": token}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data.get("error"), "Employee profile not found.")
+
+    def test_multi_org_membership_deactivates_membership_only(self):
+        # 6. If user has multiple memberships, revoking deactivates target membership without deleting Employee
+        org_b = Organization.objects.create(name="Org B", subdomain="org-b-revoke")
+        mem_b = OrganizationMembership.objects.create(
+            user=self.employee,
+            organization=org_b,
+            is_active_in_org=True
+        )
+
+        signer = TimestampSigner(salt='revoke-registration')
+        valid_token = signer.sign(str(self.employee.id))
+
+        response = self.client.post("/api/employees/revoke/", {"token": valid_token}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Global employee still exists
+        self.assertTrue(Employee.objects.filter(id=self.employee.id).exists())
+        # Target org membership is deactivated
+        self.membership.refresh_from_db()
+        self.assertFalse(self.membership.is_active_in_org)
+        self.assertTrue(self.membership.is_deleted)
+        self.assertEqual(self.membership.employment_status, 'Deactivated')
+        # Org B membership remains untouched
+        mem_b.refresh_from_db()
+        self.assertTrue(mem_b.is_active_in_org)
+
 
 class BillingSecurityRegressionTest(APITestCase):
     def setUp(self):

@@ -3,7 +3,6 @@
 # --------------------------------------------------------------------------------
 
 # STANDARD LIBRARY
-from datetime import datetime
 import json
 import logging
 
@@ -21,7 +20,7 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters.rest_framework import DjangoFilterBackend
 
@@ -149,6 +148,11 @@ class RoleViewSet(viewsets.ModelViewSet):
         if role.is_system_role or role.organization is None:
             return Response(
                 {"detail": f"System role '{role.name}' is protected and cannot be deleted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if role.org_memberships.filter(is_active_in_org=True, is_deleted=False).exists():
+            return Response(
+                {"detail": "This role is assigned to active employees. Please reassign employees first before deleting."},
                 status=status.HTTP_400_BAD_REQUEST
             )
         if role.employees.count() > 0:
@@ -768,7 +772,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         if not token:
             return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        signer = TimestampSigner()
+        signer = TimestampSigner(salt='revoke-registration')
         try:
             employee_id = signer.unsign(token, max_age=604800)
             employee = Employee.objects.get(id=employee_id)
