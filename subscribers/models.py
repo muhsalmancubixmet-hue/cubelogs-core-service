@@ -1,4 +1,5 @@
 import secrets
+from decimal import Decimal
 from django.db import models
 from core.models import BaseModel
 
@@ -206,6 +207,9 @@ class GlobalBillingSettings(BaseModel):
     invoice_generation_day = models.IntegerField(default=1)
     currency = models.CharField(max_length=10, default='INR')
     tax_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    storage_credit_size_bytes = models.BigIntegerField(default=1000000000, help_text="Commercial decimal GB (1,000,000,000 bytes)")
+    storage_credit_monthly_price = models.DecimalField(max_digits=20, decimal_places=2, default=Decimal('20.00'), help_text="Monthly price per storage credit in currency")
+    storage_billing_enabled = models.BooleanField(default=False, help_text="Global master toggle for storage billing")
 
     class Meta:
         db_table = 'api_globalbillingsettings'

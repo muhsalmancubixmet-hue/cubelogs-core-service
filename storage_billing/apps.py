@@ -1,0 +1,7 @@
+from django.apps import AppConfig
+
+
+class StorageBillingConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'storage_billing'
+    verbose_name = 'Storage Billing'

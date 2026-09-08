@@ -179,6 +179,7 @@ INSTALLED_APPS = [
     'projects',
     'subscribers',
     'payroll',
+    'storage_billing',
 ]
 
 
