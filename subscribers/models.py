@@ -1,4 +1,5 @@
 import secrets
+from decimal import Decimal
 from django.db import models
 from core.models import BaseModel
 
@@ -47,6 +48,7 @@ class Wallet(BaseModel):
     )
     balance = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
     stripe_customer_id = models.CharField(max_length=255, blank=True, null=True)
+    razorpay_customer_id = models.CharField(max_length=255, blank=True, null=True)
 
     class Meta:
         db_table = 'api_wallet'
@@ -56,9 +58,6 @@ class Wallet(BaseModel):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        # Delegate dues processing side-effects directly to BillingService post-save
-        from company.api.v1.services import BillingService
-        BillingService.process_outstanding_dues(self)
 
 
 # WalletTransaction Model: Records credits/debits associated with employee wallets
@@ -73,6 +72,10 @@ class WalletTransaction(BaseModel):
     success = models.BooleanField(default=True)
     stripeEventId = models.CharField(max_length=255, blank=True, null=True)
     stripe_session_id = models.CharField(max_length=255, blank=True, null=True)
+    razorpay_order_id = models.CharField(max_length=255, blank=True, null=True)
+    razorpay_payment_id = models.CharField(max_length=255, blank=True, null=True)
+    razorpay_signature = models.CharField(max_length=500, blank=True, null=True)
+    gateway_event_id = models.CharField(max_length=255, blank=True, null=True)
     status = models.CharField(max_length=50, default='Success')
     details = models.TextField(blank=True, null=True)
     receipt_url = models.URLField(max_length=1024, blank=True, null=True)
@@ -80,6 +83,13 @@ class WalletTransaction(BaseModel):
 
     class Meta:
         db_table = 'api_wallettransaction'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['razorpay_payment_id'],
+                condition=models.Q(success=True, razorpay_payment_id__isnull=False),
+                name='unique_successful_razorpay_payment'
+            )
+        ]
 
     def __str__(self):
         return f"{self.transactionType} - {self.amount} - {self.success} ({self.wallet.employee.email})"
@@ -111,23 +121,68 @@ class BackofficeCoupon(BaseModel):
 
 # MonthlyInvoice Model: Represents monthly organization level billing statements
 class MonthlyInvoice(BaseModel):
+    INVOICE_TYPE_CHOICES = [
+        ('SUBSCRIPTION', 'Monthly Subscription'),
+        ('DATA_RETENTION', 'Data Retention Rent'),
+    ]
+
     organization = models.ForeignKey(
         'core.Organization',
         on_delete=models.CASCADE,
         related_name='monthly_invoices',
     )
     billing_month = models.DateField()
+    invoice_type = models.CharField(
+        max_length=50,
+        choices=INVOICE_TYPE_CHOICES,
+        default='SUBSCRIPTION',
+        help_text="Category of invoice"
+    )
     amount = models.DecimalField(max_digits=20, decimal_places=2)
     is_paid = models.BooleanField(default=False)
     paid_at = models.DateTimeField(null=True, blank=True)
     invoice_email_sent = models.BooleanField(default=False)
     deduction_reminder_sent = models.BooleanField(default=False)
+    payment_failed_email_sent = models.BooleanField(default=False)
+    restriction_email_sent = models.BooleanField(default=False)
+    reactivation_email_sent = models.BooleanField(default=False)
+
+    # Immutable historical calculation snapshot fields
+    employee_count_snapshot = models.IntegerField(null=True, blank=True, help_text="Billable employee count at invoice creation time")
+    employee_unit_price_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    employee_total_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    base_price_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    attendance_enabled_snapshot = models.BooleanField(null=True, blank=True)
+    attendance_price_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    attendance_unit_price_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    attendance_total_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    project_enabled_snapshot = models.BooleanField(null=True, blank=True)
+    project_price_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    project_unit_price_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    project_total_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    subtotal_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+    tax_percentage_snapshot = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    tax_amount_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
+
+    # Storage usage billing snapshot fields (billed in arrears)
+    storage_usage_month_snapshot = models.DateField(null=True, blank=True)
+    storage_charge_snapshot = models.DecimalField(max_digits=20, decimal_places=2, default=Decimal('0.00'))
+    storage_finalized_days_snapshot = models.PositiveSmallIntegerField(default=0)
+    storage_billable_bytes_days_snapshot = models.BigIntegerField(default=0)
+    storage_credit_days_snapshot = models.BigIntegerField(default=0)
 
     class Meta:
         db_table = 'api_monthlyinvoice'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['organization', 'billing_month', 'invoice_type'],
+                name='unique_org_billing_month_type'
+            )
+        ]
 
     def __str__(self):
-        return f"Invoice for {self.organization.name} - {self.billing_month.strftime('%B %Y')} - {self.amount} (Paid: {self.is_paid})"
+        return f"Invoice for {self.organization.name} - {self.billing_month.strftime('%B %Y')} ({self.invoice_type}) - {self.amount} (Paid: {self.is_paid})"
+
 
 
 # Coupon Model: Tracks customer promotion coupons, discount values, and usage
@@ -148,17 +203,20 @@ class Coupon(BaseModel):
 
 # GlobalBillingSettings Model: Configurable settings for monthly billing values, cycles, tax and grace period
 class GlobalBillingSettings(BaseModel):
-    monthly_subscription_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
+    monthly_subscription_price = models.DecimalField(max_digits=20, decimal_places=2, default=0.00)
     monthly_data_rent = models.DecimalField(max_digits=20, decimal_places=2, default=50.00)
-    attendance_module_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
-    tasks_module_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
-    employee_seat_price = models.DecimalField(max_digits=20, decimal_places=2, default=100.00)
+    attendance_module_price = models.DecimalField(max_digits=20, decimal_places=2, default=99.00)
+    tasks_module_price = models.DecimalField(max_digits=20, decimal_places=2, default=56.00)
+    employee_seat_price = models.DecimalField(max_digits=20, decimal_places=2, default=50.00)
     grace_period_days = models.IntegerField(default=5)
     reminder_email_days_before = models.IntegerField(default=1)
     auto_deduction_day = models.IntegerField(default=5)
     invoice_generation_day = models.IntegerField(default=1)
     currency = models.CharField(max_length=10, default='INR')
     tax_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
+    storage_credit_size_bytes = models.BigIntegerField(default=1000000000, help_text="Commercial decimal GB (1,000,000,000 bytes)")
+    storage_credit_monthly_price = models.DecimalField(max_digits=20, decimal_places=2, default=Decimal('20.00'), help_text="Monthly price per storage credit in currency")
+    storage_billing_enabled = models.BooleanField(default=False, help_text="Global master toggle for storage billing")
 
     class Meta:
         db_table = 'api_globalbillingsettings'

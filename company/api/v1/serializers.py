@@ -59,6 +59,17 @@ class LeadSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lead
         fields = '__all__'
+        extra_kwargs = {
+            'name': {'required': False, 'allow_null': True, 'allow_blank': True},
+            'companyName': {'required': False, 'allow_null': True, 'allow_blank': True},
+            'message': {'required': False, 'allow_null': True, 'allow_blank': True},
+        }
+
+    def validate(self, attrs):
+        name = attrs.get('name')
+        if name is not None and not str(name).strip():
+            raise serializers.ValidationError({'name': ['This field may not be blank.']})
+        return attrs
 
     def get_assigned_staff_name(self, obj):
         if obj.assigned_staff:

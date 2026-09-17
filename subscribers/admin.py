@@ -18,14 +18,14 @@ class SubscriberAccountAdmin(admin.ModelAdmin):
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
-    list_display = ('employee', 'organization', 'balance', 'stripe_customer_id')
-    search_fields = ('employee__email', 'stripe_customer_id')
+    list_display = ('employee', 'organization', 'balance', 'razorpay_customer_id', 'stripe_customer_id')
+    search_fields = ('employee__email', 'razorpay_customer_id', 'stripe_customer_id')
 
 @admin.register(WalletTransaction)
 class WalletTransactionAdmin(admin.ModelAdmin):
-    list_display = ('wallet', 'amount', 'transactionType', 'success', 'status', 'created_at')
+    list_display = ('wallet', 'amount', 'transactionType', 'success', 'status', 'razorpay_order_id', 'razorpay_payment_id', 'created_at')
     list_filter = ('transactionType', 'success', 'status')
-    search_fields = ('wallet__employee__email', 'details')
+    search_fields = ('wallet__employee__email', 'details', 'razorpay_order_id', 'razorpay_payment_id', 'stripe_session_id')
 
 @admin.register(BackofficeCoupon)
 class BackofficeCouponAdmin(admin.ModelAdmin):

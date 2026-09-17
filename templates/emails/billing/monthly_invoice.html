@@ -1,0 +1,83 @@
+{% extends "emails/base.html" %}
+
+{% block header_class %}header-dark{% endblock %}
+{% block header_title %}Monthly Subscription Invoice{% endblock %}
+
+{% block content %}
+<h2>Hello,</h2>
+<p>Your monthly subscription invoice for <strong>{{ org_name }}</strong> for <strong>{{ billing_month }}</strong> is ready.</p>
+
+<table class="invoice-table">
+    <thead>
+        <tr><th>Line Item</th><th>Details</th><th>Amount</th></tr>
+    </thead>
+    <tbody>
+        {% if base_price > 0 %}
+        <tr>
+            <td><strong>Base Subscription</strong></td>
+            <td>Monthly Platform Base Fee</td>
+            <td>₹{{ base_price|floatformat:2 }} INR</td>
+        </tr>
+        {% endif %}
+        <tr>
+            <td><strong>Employee Seats</strong></td>
+            <td>{{ employee_count }} billable seat(s) × ₹{{ unit_price|floatformat:2 }}</td>
+            <td>₹{{ employee_total|floatformat:2 }} INR</td>
+        </tr>
+        {% if attendance_enabled %}
+        <tr>
+            <td><strong>Attendance Module</strong></td>
+            <td>{% if attendance_unit_price %}{{ employee_count }} billable seat(s) × ₹{{ attendance_unit_price|floatformat:2 }}{% else %}Time & Attendance Tracking{% endif %}</td>
+            <td>₹{{ attendance_price|floatformat:2 }} INR</td>
+        </tr>
+        {% endif %}
+        {% if project_enabled %}
+        <tr>
+            <td><strong>Projects & Tasks Module</strong></td>
+            <td>{% if project_unit_price %}{{ employee_count }} billable seat(s) × ₹{{ project_unit_price|floatformat:2 }}{% else %}Project Management & Task Tracking{% endif %}</td>
+            <td>₹{{ project_price|floatformat:2 }} INR</td>
+        </tr>
+        {% endif %}
+        {% if storage_charge > 0 %}
+        <tr>
+            <td><strong>Storage & Media — {{ storage_usage_month }}</strong></td>
+            <td>{{ storage_finalized_days }} finalized daily usage snapshots</td>
+            <td>₹{{ storage_charge|floatformat:2 }} INR</td>
+        </tr>
+        {% endif %}
+        {% if tax_amount > 0 or base_price > 0 %}
+        <tr>
+            <td colspan="2" style="text-align: right;"><strong>Subtotal</strong></td>
+            <td><strong>₹{{ subtotal|floatformat:2 }} INR</strong></td>
+        </tr>
+        {% endif %}
+        {% if tax_amount > 0 %}
+        <tr>
+            <td colspan="2" style="text-align: right;"><strong>Tax ({{ tax_percentage }}%)</strong></td>
+            <td>₹{{ tax_amount|floatformat:2 }} INR</td>
+        </tr>
+        {% endif %}
+        <tr style="background-color: #f1f5f9;">
+            <td colspan="2" style="text-align: right; font-size: 16px;"><strong>Total Amount Due</strong></td>
+            <td style="font-size: 16px; color: #2563eb;"><strong>₹{{ total_amount|floatformat:2 }} INR</strong></td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="alert-box" style="margin: 20px 0; text-align: left;">
+    <p style="margin: 4px 0;"><strong>Current Prepaid Wallet Balance:</strong> ₹{{ wallet_balance|floatformat:2 }} INR</p>
+    <p style="margin: 4px 0;"><strong>Scheduled Auto-Deduction Date:</strong> {{ auto_deduction_date }}</p>
+    {% if required_recharge > 0 %}
+    <p style="margin: 8px 0 0 0; color: #dc2626; font-weight: 600;">
+        ⚠️ Action Required: Please top up your prepaid wallet by at least ₹{{ required_recharge|floatformat:2 }} INR before the auto-deduction date to avoid service disruption.
+    </p>
+    {% endif %}
+</div>
+
+<div class="text-center" style="margin: 28px 0;">
+    <a href="{{ add_money_url }}" class="btn" style="margin: 0 8px 8px 8px; display: inline-block;">Add Money to Wallet</a>
+    <a href="{{ view_invoice_url }}" class="btn" style="background-color: #475569; margin: 0 8px 8px 8px; display: inline-block;">View Invoice</a>
+</div>
+
+<p style="margin-top: 32px; color: #475569;">Thank you,<br><strong style="color: #0F172A;">The CubeLogs Billing Team</strong></p>
+{% endblock %}

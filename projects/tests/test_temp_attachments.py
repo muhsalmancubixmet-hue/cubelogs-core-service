@@ -36,7 +36,8 @@ class TempAttachmentsTestCase(TestCase):
             user=self.emp1,
             file_obj=self.test_image,
             draft_token=self.draft_token,
-            is_inline=True
+            is_inline=True,
+            organization=self.org1
         )
         self.assertIsNotNone(att.id)
         self.assertEqual(str(att.draft_token), self.draft_token)
@@ -48,14 +49,16 @@ class TempAttachmentsTestCase(TestCase):
             create_attachment(
                 user=None,
                 file_obj=self.test_image,
-                draft_token=self.draft_token
+                draft_token=self.draft_token,
+                organization=self.org1
             )
 
     def test_3_temp_upload_stores_organization_and_uploader(self):
         att = create_attachment(
             user=self.emp1,
             file_obj=self.test_image,
-            draft_token=self.draft_token
+            draft_token=self.draft_token,
+            organization=self.org1
         )
         self.assertEqual(att.uploaded_by, self.emp1)
         self.assertEqual(att.company, self.org1)
@@ -66,7 +69,8 @@ class TempAttachmentsTestCase(TestCase):
                 user=self.emp1,
                 file_obj=self.test_image,
                 draft_token=None,
-                project=None
+                project=None,
+                organization=self.org1
             )
 
     def test_4b_non_uuid_draft_token_raises_validation_error(self):
@@ -75,14 +79,16 @@ class TempAttachmentsTestCase(TestCase):
             create_attachment(
                 user=self.emp1,
                 file_obj=self.test_image,
-                draft_token="draft-r0nykjsqao"
+                draft_token="draft-r0nykjsqao",
+                organization=self.org1
             )
 
     def test_5_cross_user_token_rejected_in_promotion(self):
         att = create_attachment(
             user=self.emp1,
             file_obj=self.test_image,
-            draft_token=self.draft_token
+            draft_token=self.draft_token,
+            organization=self.org1
         )
         p = create_project(
             company=self.org1,
@@ -99,7 +105,8 @@ class TempAttachmentsTestCase(TestCase):
         att = create_attachment(
             user=self.emp1,
             file_obj=self.test_image,
-            draft_token=self.draft_token
+            draft_token=self.draft_token,
+            organization=self.org1
         )
         p = create_project(
             company=self.org2,
@@ -116,7 +123,8 @@ class TempAttachmentsTestCase(TestCase):
         att = create_attachment(
             user=self.emp1,
             file_obj=self.test_image,
-            draft_token=self.draft_token
+            draft_token=self.draft_token,
+            organization=self.org1
         )
         p = create_project(
             company=self.org1,
@@ -131,9 +139,9 @@ class TempAttachmentsTestCase(TestCase):
         self.assertFalse(att.is_temporary)
 
     def test_8_project_create_does_not_promote_other_users_drafts(self):
-        att1 = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token)
+        att1 = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token, organization=self.org1)
         token2 = str(uuid.uuid4())
-        att2 = create_attachment(user=self.emp2, file_obj=self.test_image, draft_token=token2)
+        att2 = create_attachment(user=self.emp2, file_obj=self.test_image, draft_token=token2, organization=self.org1)
 
         p = create_project(
             company=self.org1,
@@ -149,7 +157,7 @@ class TempAttachmentsTestCase(TestCase):
         self.assertIsNone(att2.project)
 
     def test_9_failed_project_validation_preserves_drafts(self):
-        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token)
+        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token, organization=self.org1)
         try:
             create_project(
                 company=self.org1,
@@ -167,7 +175,7 @@ class TempAttachmentsTestCase(TestCase):
         self.assertEqual(str(att.draft_token), self.draft_token)
 
     def test_10_successful_promotion_clears_temporary_state(self):
-        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token)
+        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token, organization=self.org1)
         p = create_project(company=self.org1, name="Clean Project", project_manager=self.emp1, user=self.emp1, draft_token=self.draft_token)
         att.refresh_from_db()
         self.assertEqual(att.project, p)
@@ -175,7 +183,7 @@ class TempAttachmentsTestCase(TestCase):
         self.assertIsNone(att.expires_at)
 
     def test_11_duplicate_submit_does_not_duplicate_attachments(self):
-        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token)
+        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token, organization=self.org1)
         p1 = create_project(company=self.org1, name="P1", project_manager=self.emp1, user=self.emp1, draft_token=self.draft_token)
         att.refresh_from_db()
 
@@ -184,7 +192,7 @@ class TempAttachmentsTestCase(TestCase):
         self.assertEqual(p2.attachments.count(), 0)
 
     def test_12_expired_draft_cleanup_works(self):
-        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token)
+        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token, organization=self.org1)
         att.expires_at = timezone.now() - timedelta(hours=2)
         att.save()
 
@@ -202,12 +210,12 @@ class TempAttachmentsTestCase(TestCase):
     def test_14_10mb_limit_works(self):
         big_file = SimpleUploadedFile("big.png", b"\x89PNG\r\n\x1a\n" + b"x" * (11 * 1024 * 1024), content_type="image/png")
         with self.assertRaises(Exception):
-            create_attachment(user=self.emp1, file_obj=big_file, draft_token=self.draft_token)
+            create_attachment(user=self.emp1, file_obj=big_file, draft_token=self.draft_token, organization=self.org1)
 
     def test_15_mime_validation_works(self):
         bad_file = SimpleUploadedFile("evil.exe", b"binary", content_type="application/octet-stream")
         with self.assertRaises(Exception):
-            create_attachment(user=self.emp1, file_obj=bad_file, draft_token=self.draft_token)
+            create_attachment(user=self.emp1, file_obj=bad_file, draft_token=self.draft_token, organization=self.org1)
 
     def test_16_attachment_only_comment_allowed_and_empty_message_rejected(self):
         from projects.models import ProjectStory
@@ -219,7 +227,7 @@ class TempAttachmentsTestCase(TestCase):
             title="Test Story",
             created_by=self.emp1
         )
-        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token)
+        att = create_attachment(user=self.emp1, file_obj=self.test_image, draft_token=self.draft_token, organization=self.org1)
 
         # 1. Blank comment with valid draft attachment -> Allowed
         comment_obj = create_comment(

@@ -86,21 +86,25 @@ def _plan_restricted_response(request):
 # Shared Evaluators
 # --------------------------------------------------------------------------------
 
-def has_fine_grained_permission(user, permissions, project=None):
+def has_fine_grained_permission(user, permissions, project=None, active_membership=None):
     """
     Check if the user is a superuser/superadmin or possesses one of the required permissions,
     evaluating user's Effective Permissions = (Role Permissions + Extra User Permissions) - Denied User Permissions.
+    Prefers active_membership.role when provided.
     """
     if not (user and user.is_authenticated):
         return False
     if user.is_superuser or getattr(user, 'isSuperAdmin', False):
         return True
 
+    if not active_membership and hasattr(user, 'active_membership'):
+        active_membership = user.active_membership
+
     if hasattr(user, 'has_capability'):
-        return user.has_capability(permissions, project=project)
+        return user.has_capability(permissions, project=project, active_membership=active_membership)
 
     if hasattr(user, 'get_effective_permissions'):
-        user_perms = user.get_effective_permissions()
+        user_perms = user.get_effective_permissions(active_membership=active_membership)
     else:
         user_perms = getattr(user, 'permissions', [])
 

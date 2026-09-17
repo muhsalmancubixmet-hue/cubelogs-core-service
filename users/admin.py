@@ -9,7 +9,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
 # THIRD PARTY
-from .models import Employee, Template
+from .models import Employee, Template, EmployeeProfile
 
 # APPLICATION SPECIFIC
 
@@ -34,3 +34,10 @@ class EmployeeAdmin(UserAdmin):
 class TemplateAdmin(admin.ModelAdmin):
     list_display = ('name',)
     search_fields = ('name',)
+
+@admin.register(EmployeeProfile)
+class EmployeeProfileAdmin(admin.ModelAdmin):
+    list_display = ('user', 'organization', 'employee_code', 'designation', 'department', 'employment_status')
+    list_filter = ('organization', 'employment_status', 'department')
+    search_fields = ('user__email', 'employee_code', 'designation', 'department')
+

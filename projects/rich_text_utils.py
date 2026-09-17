@@ -252,3 +252,154 @@ def normalize_to_canonical_html(content):
     final_html = sanitize_html(final_html)
 
     return final_html
+
+
+# --------------------------------------------------------------------------------
+# Rich-Text Media Hardening: Base64 Block & Orphan Attachment Reconciliation
+# --------------------------------------------------------------------------------
+
+import html.parser
+from django.core.exceptions import ValidationError
+
+BASE64_IMAGE_PATTERN = re.compile(
+    r'data:image/[^,;]+(?:\s*;\s*[^,;]+)*\s*;\s*base64\s*,',
+    re.IGNORECASE
+)
+
+
+def validate_rich_text_no_base64(content, field_name='rich-text'):
+    """
+    Authoritative backend check: Rejects raw inline base64 image data URIs.
+    Direct API requests containing raw base64 images will fail validation with HTTP 400.
+    """
+    if not content or not isinstance(content, str):
+        return content
+    if BASE64_IMAGE_PATTERN.search(content):
+        raise ValidationError(f"Raw base64 images are not allowed in {field_name}. Upload images as attachments.")
+    return content
+
+
+class AttachmentIdExtractor(html.parser.HTMLParser):
+    """
+    Standard library HTML parser to safely extract integer attachment IDs
+    from data-attachment-id and data-inline-image-id attributes.
+    """
+    def __init__(self):
+        super().__init__()
+        self.attachment_ids = set()
+
+    def handle_starttag(self, tag, attrs):
+        for attr, val in attrs:
+            if attr.lower() in ('data-attachment-id', 'data-inline-image-id'):
+                if val:
+                    val_str = str(val).strip()
+                    if val_str.isdigit():
+                        self.attachment_ids.add(int(val_str))
+
+
+def extract_attachment_ids_from_html(content):
+    """
+    Safely extracts a set of integer attachment IDs from HTML attributes.
+    Silently ignores malformed or unrelated HTML without raising exceptions.
+    """
+    if not content or not isinstance(content, str):
+        return set()
+
+    extractor = AttachmentIdExtractor()
+    try:
+        extractor.feed(content)
+    except Exception:
+        pass
+
+    # Regex fallback / supplement for resilience across partial or broken markup
+    for m in re.findall(r'data-(?:attachment|inline-image)-id=["\']?(\d+)["\']?', content, re.IGNORECASE):
+        extractor.attachment_ids.add(int(m))
+
+    return extractor.attachment_ids
+
+
+def get_entity_rich_text_fields(entity):
+    """
+    Returns list of rich-text content strings across all covered rich-text fields of the entity.
+    """
+    from projects.models import Project, ProjectEpic, ProjectStory, ProjectTask
+    if isinstance(entity, ProjectStory):
+        return [entity.description, entity.acceptance_criteria]
+    elif isinstance(entity, (Project, ProjectEpic, ProjectTask)):
+        return [entity.description]
+    return []
+
+
+def reconcile_entity_rich_text_attachments(entity, user=None):
+    """
+    Reconciles rich-text attachments for a supported entity (Project, Epic, Story, Task).
+    1. Extracts the UNION of data-attachment-id references across ALL rich-text fields of the entity.
+    2. Enforces reference ownership security (rejects if reference belongs to another organization).
+    3. Any direct non-comment attachment belonging to this entity absent from the combined referenced set
+       is deleted via canonical ORM delete (triggering StorageFile/StorageEvent lifecycle).
+    Never deletes comment/chat attachments, drafts awaiting linking, or cross-entity attachments.
+    """
+    if not entity or not getattr(entity, 'pk', None):
+        return
+
+    from projects.models import Project, ProjectEpic, ProjectStory, ProjectTask, ProjectAttachment
+    from projects.signals import _resolve_attachment_organization
+
+    filter_kwargs = None
+    active_org = None
+
+    if isinstance(entity, ProjectStory):
+        filter_kwargs = {'story': entity}
+        active_org = entity.project.company if entity.project else None
+    elif isinstance(entity, ProjectTask):
+        filter_kwargs = {'task': entity}
+        active_org = entity.story.project.company if (entity.story and entity.story.project) else None
+    elif isinstance(entity, ProjectEpic):
+        filter_kwargs = {'epic': entity}
+        active_org = entity.company
+    elif isinstance(entity, Project):
+        filter_kwargs = {'project': entity}
+        active_org = entity.company
+    else:
+        # Deferred / unsupported entity (e.g. Subtask, Retrospective)
+        return
+
+    if not filter_kwargs or not active_org:
+        return
+
+    # Extract UNION of all data-attachment-id references across all covered fields
+    field_values = get_entity_rich_text_fields(entity)
+    referenced_ids = set()
+    for val in field_values:
+        if val:
+            referenced_ids |= extract_attachment_ids_from_html(val)
+
+    # Reference ownership security check (Section 11):
+    # Ensure no referenced attachment belongs to another organization
+    for att_id in referenced_ids:
+        att = ProjectAttachment.objects.filter(id=att_id).first()
+        if att:
+            att_org = _resolve_attachment_organization(att)
+            if att_org and active_org and att_org.id != active_org.id:
+                from rest_framework.exceptions import ValidationError as DRFValidationError
+                raise DRFValidationError(f"Cross-organization attachment reference {att_id} is not permitted.")
+
+    # Query candidate entity attachments:
+    # - Directly linked to this exact entity
+    # - Belongs to this organization
+    # - NOT a chat/comment attachment (comment__isnull=True)
+    # - Belongs to entity attachment scope (both is_inline=True images and is_inline=False paperclip files)
+    # - NOT a temporary draft awaiting link (is_temporary=False)
+    candidates = ProjectAttachment.objects.filter(
+        **filter_kwargs,
+        company=active_org,
+        comment__isnull=True,
+        is_temporary=False,
+    )
+
+    # Candidate entity attachments absent from the final referenced set are orphaned
+    orphans = candidates.exclude(id__in=referenced_ids)
+    for orphan in orphans:
+        if user:
+            orphan._storage_deleted_by = user
+        orphan.delete()

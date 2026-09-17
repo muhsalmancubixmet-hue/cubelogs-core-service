@@ -91,6 +91,9 @@ def create_task(story, title, description=None, assigned_to=None, priority='Medi
     """
     Creates a ProjectTask under a ProjectStory with TASK-001 key.
     """
+    from projects.rich_text_utils import validate_rich_text_no_base64, reconcile_entity_rich_text_attachments
+    validate_rich_text_no_base64(description, field_name='description')
+
     from projects.services.statuses import get_default_status
 
     if status is not None and not hasattr(status, 'category'):
@@ -132,6 +135,7 @@ def create_task(story, title, description=None, assigned_to=None, priority='Medi
             details={"task_key": project_task.task_key, "title": project_task.title}
         )
 
+    reconcile_entity_rich_text_attachments(project_task, user=user)
     recalculate_story_progress(story)
     return project_task
 

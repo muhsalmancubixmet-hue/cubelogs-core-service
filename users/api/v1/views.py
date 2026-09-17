@@ -3,7 +3,6 @@
 # --------------------------------------------------------------------------------
 
 # STANDARD LIBRARY
-from datetime import datetime
 import json
 import logging
 
@@ -13,14 +12,15 @@ logger = logging.getLogger(__name__)
 from django.contrib.auth import authenticate, login, logout
 from django.shortcuts import render, redirect
 from django.http import HttpResponse, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
+from django.utils.decorators import method_decorator
 
 # THIRD PARTY
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django_filters.rest_framework import DjangoFilterBackend
 
@@ -31,6 +31,7 @@ from core.mixins import FilterMixinNew
 from core.permissions import ActionPermissionMixin, DRFCheckModePermission, HasRequiredPermission, IsSuperAdminUser
 from users.filters import EmployeeFilter
 from users.api.v1.serializers import EmployeeSerializer, RoleSerializer, PermissionFlagSerializer, CustomTokenRefreshSerializer
+from users.api.v1.services import UserService
 from core.module_registry.loader import load_modules
 from core.decorators import check_mode
 from core.throttling import AuthRateThrottle
@@ -82,9 +83,10 @@ class RoleViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = Role.objects.filter(is_active=True).prefetch_related('permissions', 'employees')
 
-        if not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
-            if user.organization:
-                qs = qs.filter(Q(organization=user.organization) | Q(organization__isnull=True))
+        if not user.is_superuser:
+            active_org = getattr(self.request, 'active_organization', None) or getattr(user, 'organization', None)
+            if active_org:
+                qs = qs.filter(Q(organization=active_org) | Q(organization__isnull=True))
             else:
                 qs = qs.filter(organization__isnull=True)
 
@@ -102,8 +104,8 @@ class RoleViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        org = user.organization if (user.is_authenticated and hasattr(user, 'organization')) else None
-        role = serializer.save(organization=org)
+        active_org = getattr(self.request, 'active_organization', None) or getattr(user, 'organization', None)
+        role = serializer.save(organization=active_org)
         AuditLog.objects.create(
             employee=user if user.is_authenticated else None,
             employeeName=f"{user.first_name} {user.last_name}".strip() or (user.email if user.is_authenticated else "System"),
@@ -111,6 +113,17 @@ class RoleViewSet(viewsets.ModelViewSet):
             details=f"Created custom role '{role.name}' ({role.slug}).",
             ipAddress=self.request.META.get('REMOTE_ADDR')
         )
+
+    def update(self, request, *args, **kwargs):
+        role = self.get_object()
+        if not request.user.is_superuser:
+            active_org = getattr(request, 'active_organization', None) or getattr(request.user, 'organization', None)
+            if role.organization is None or role.organization != active_org:
+                return Response(
+                    {"detail": "You do not have permission to modify this role."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        return super().update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
         role = serializer.save()
@@ -125,9 +138,21 @@ class RoleViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         role = self.get_object()
-        if role.is_system_role:
+        if not request.user.is_superuser:
+            active_org = getattr(request, 'active_organization', None) or getattr(request.user, 'organization', None)
+            if role.organization is None or role.organization != active_org:
+                return Response(
+                    {"detail": "You do not have permission to delete this role."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        if role.is_system_role or role.organization is None:
             return Response(
                 {"detail": f"System role '{role.name}' is protected and cannot be deleted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if role.org_memberships.filter(is_active_in_org=True, is_deleted=False).exists():
+            return Response(
+                {"detail": "This role is assigned to active employees. Please reassign employees first before deleting."},
                 status=status.HTTP_400_BAD_REQUEST
             )
         if role.employees.count() > 0:
@@ -150,6 +175,7 @@ class RoleViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='duplicate')
     def duplicate(self, request, pk=None):
         role = self.get_object()
+        active_org = getattr(request, 'active_organization', None) or getattr(request.user, 'organization', None)
         new_name = request.data.get('name')
         new_label = request.data.get('label') or new_name
 
@@ -160,7 +186,7 @@ class RoleViewSet(viewsets.ModelViewSet):
         from users.models import Role
         new_slug = slugify(new_name)
 
-        if Role.objects.filter(slug=new_slug, organization=request.user.organization).exists():
+        if Role.objects.filter(slug=new_slug, organization=active_org).exists():
             return Response({"name": ["A role with this name/slug already exists."]}, status=status.HTTP_400_BAD_REQUEST)
 
         duplicated_role = Role.objects.create(
@@ -168,7 +194,7 @@ class RoleViewSet(viewsets.ModelViewSet):
             slug=new_slug,
             label=new_label,
             description=f"Duplicated from '{role.name}'. " + (role.description or ''),
-            organization=request.user.organization,
+            organization=active_org,
             is_system_role=False,
             is_active=True
         )
@@ -216,7 +242,7 @@ class CustomTokenObtainPairView(APIView):
         user_data = serializer.data
         user_data = _enrich_user_data(user_data, user.organization)
 
-        refresh = RefreshToken.for_user(user)
+        refresh = UserService.get_tokens_for_user(user)
 
         AuditLog.objects.create(
             employee=user,
@@ -235,15 +261,169 @@ class CustomTokenObtainPairView(APIView):
 # --------------------------------------------------------------------------------
 # CurrentUserView: API endpoint to retrieve the currently logged in employee profile details.
 # --------------------------------------------------------------------------------
+@method_decorator(ensure_csrf_cookie, name='dispatch')
 class CurrentUserView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        serializer = EmployeeSerializer(request.user)
+        from django.middleware.csrf import get_token
+        get_token(request)
+        from users.models import OrganizationMembership
+
+        active_org = request.active_organization
+        active_mem = request.active_membership
+
+        serializer = EmployeeSerializer(request.user, context={'request': request})
         user_data = dict(serializer.data)
         # Enrich with subscription, feature flags, and permission gates
-        user_data = _enrich_user_data(user_data, request.user.organization)
+        user_data = _enrich_user_data(user_data, active_org or request.user.organization)
+
+        if active_mem:
+            user_data['designation'] = active_mem.designation or ''
+            user_data['department'] = active_mem.department or ''
+            if active_mem.role:
+                user_data['role'] = active_mem.role.id
+                user_data['role_name'] = active_mem.role.name
+
+        # Phase 2C Additive Context Fields
+
+        user_data['active_organization'] = {
+            'id': active_org.id,
+            'name': active_org.name,
+            'subdomain': getattr(active_org, 'subdomain', '')
+        } if active_org else None
+
+        user_data['active_membership'] = {
+            'id': active_mem.id,
+            'organization_id': active_mem.organization_id,
+            'role': active_mem.role.name if active_mem.role else None,
+            'department': active_mem.department or '',
+            'designation': active_mem.designation or '',
+            'employee_code': active_mem.employee_code or '',
+            'employment_status': active_mem.employment_status,
+            'is_active_in_org': active_mem.is_active_in_org
+        } if active_mem else None
+
+        memberships = OrganizationMembership.objects.filter(
+            user=request.user,
+            is_deleted=False,
+            is_active_in_org=True
+        ).select_related('organization', 'role')
+
+        user_data['available_memberships'] = [
+            {
+                'id': m.id,
+                'organization_id': m.organization_id,
+                'organization_name': m.organization.name,
+                'organization_subdomain': getattr(m.organization, 'subdomain', ''),
+                'role': m.role.name if m.role else None,
+                'designation': m.designation or '',
+                'department': m.department or '',
+                'employee_code': m.employee_code or '',
+                'employment_status': m.employment_status,
+                'is_active_in_org': m.is_active_in_org
+            }
+            for m in memberships
+        ]
+
         return Response(user_data)
+
+
+# --------------------------------------------------------------------------------
+# SwitchOrganizationView: Authenticated endpoint to switch active tenant workspace.
+# --------------------------------------------------------------------------------
+class SwitchOrganizationView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AuthRateThrottle]
+
+    def post(self, request):
+        user = request.user
+        org_id = request.data.get('organization_id') or request.data.get('organization')
+        if not org_id:
+            return Response({'error': 'Organization ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from users.models import OrganizationMembership
+        membership = OrganizationMembership.objects.filter(
+            user=user,
+            organization_id=org_id,
+            is_active_in_org=True,
+            is_deleted=False
+        ).select_related('organization', 'role').first()
+
+        if not membership:
+            return Response({'error': 'You do not have an active membership in this organization.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Issue new JWT tokens for selected active membership
+        tokens = UserService.get_tokens_for_user(user, active_membership=membership)
+
+        # Attach cached active membership to request context
+        request._cached_active_membership = membership
+        request._cached_active_organization = membership.organization
+        if hasattr(request, '_request'):
+            request._request._cached_active_membership = membership
+            request._request._cached_active_organization = membership.organization
+
+        serializer = EmployeeSerializer(user, context={'request': request})
+        user_data = serializer.data
+        user_data = _enrich_user_data(user_data, membership.organization)
+
+        user_data['designation'] = membership.designation or ''
+        user_data['department'] = membership.department or ''
+        if membership.role:
+            user_data['role'] = membership.role.id
+            user_data['role_name'] = membership.role.name
+
+        user_data['active_organization'] = {
+            'id': membership.organization.id,
+            'name': membership.organization.name,
+            'subdomain': getattr(membership.organization, 'subdomain', '')
+        }
+        user_data['active_membership'] = {
+            'id': membership.id,
+            'organization_id': membership.organization_id,
+            'role': membership.role.name if membership.role else None,
+            'department': membership.department or '',
+            'designation': membership.designation or '',
+            'employee_code': membership.employee_code or '',
+            'employment_status': membership.employment_status,
+            'is_active_in_org': membership.is_active_in_org
+        }
+
+        # Attach available active memberships list
+        m_qs = OrganizationMembership.objects.filter(
+            user=user,
+            is_deleted=False,
+            is_active_in_org=True
+        ).select_related('organization', 'role')
+
+        user_data['available_memberships'] = [
+            {
+                'id': m.id,
+                'organization_id': m.organization_id,
+                'organization_name': m.organization.name,
+                'organization_subdomain': getattr(m.organization, 'subdomain', ''),
+                'role': m.role.name if m.role else None,
+                'designation': m.designation or '',
+                'department': m.department or '',
+                'employee_code': m.employee_code or '',
+                'employment_status': m.employment_status,
+                'is_active_in_org': m.is_active_in_org
+            }
+            for m in m_qs
+        ]
+
+        AuditLog.objects.create(
+            employee=user,
+            employeeName=f"{user.first_name} {user.last_name}".strip() or user.email,
+            action="Switched Workspace",
+            details=f"Switched active workspace to organization: {membership.organization.name} (ID: {membership.organization.id})."
+        )
+
+        return Response({
+            'user': user_data,
+            'access': str(tokens.access_token),
+            'refresh': str(tokens),
+        }, status=status.HTTP_200_OK)
 
 
 # --------------------------------------------------------------------------------
@@ -271,7 +451,7 @@ class MagicLoginView(APIView):
             user_data = serializer.data
             user_data = _enrich_user_data(user_data, employee.organization)
 
-            refresh = RefreshToken.for_user(employee)
+            refresh = UserService.get_tokens_for_user(employee)
 
             AuditLog.objects.create(
                 employee=employee,
@@ -311,20 +491,21 @@ class PasswordResetRequestView(APIView):
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        import hashlib
         from django.core.signing import TimestampSigner
         from django.conf import settings
 
-        email = request.data.get('email')
+        email = (request.data.get('email') or '').strip()
         if not email:
             return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            employee = Employee.objects.get(email=email)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account with this email does not exist.'}, status=status.HTTP_404_NOT_FOUND)
+        employee = Employee.objects.filter(email__iexact=email).first()
+        if not employee or not employee.is_active:
+            return Response({'message': 'Password reset link has been sent to your email.'}, status=status.HTTP_200_OK)
 
         signer = TimestampSigner(salt='password-reset')
-        token = signer.sign(str(employee.id))
+        pw_fp = hashlib.sha256(employee.password.encode('utf-8')).hexdigest()[:16]
+        token = signer.sign(f"{employee.id}:{pw_fp}")
 
         frontend_url = settings.FRONTEND_URL
         reset_url = f"{frontend_url}/login/reset?token={token}"
@@ -337,7 +518,7 @@ We received a request to reset the password for your CubeLogs account.
 Click the link below to securely reset your password:
 {reset_url}
 
-This link is highly time-sensitive and will expire in 2 minutes.
+This link is highly time-sensitive and will expire in 30 minutes.
 
 If you did not request this, you can safely ignore this email.
 """
@@ -362,6 +543,7 @@ class PasswordResetValidateView(APIView):
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        import hashlib
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
         token = request.data.get('token')
@@ -370,15 +552,19 @@ class PasswordResetValidateView(APIView):
 
         signer = TimestampSigner(salt='password-reset')
         try:
-            employee_id = signer.unsign(token, max_age=120)
-            Employee.objects.get(id=employee_id)
+            payload = signer.unsign(token, max_age=1800)
+            parts = payload.split(':', 1)
+            employee = Employee.objects.get(id=parts[0])
+            if len(parts) == 2:
+                current_fp = hashlib.sha256(employee.password.encode('utf-8')).hexdigest()[:16]
+                if parts[1] != current_fp:
+                    return Response({'error': 'Password reset link has already been used or is invalid.'}, status=status.HTTP_400_BAD_REQUEST)
+
             return Response({'message': 'Token is valid.'}, status=status.HTTP_200_OK)
         except SignatureExpired:
             return Response({'error': 'Password reset link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
-        except BadSignature:
+        except (BadSignature, ValueError, Employee.DoesNotExist):
             return Response({'error': 'Invalid password reset link.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # --------------------------------------------------------------------------------
@@ -389,6 +575,7 @@ class PasswordResetConfirmView(APIView):
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        import hashlib
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
         token = request.data.get('token')
@@ -404,8 +591,13 @@ class PasswordResetConfirmView(APIView):
 
         signer = TimestampSigner(salt='password-reset')
         try:
-            employee_id = signer.unsign(token, max_age=120)
-            employee = Employee.objects.get(id=employee_id)
+            payload = signer.unsign(token, max_age=1800)
+            parts = payload.split(':', 1)
+            employee = Employee.objects.get(id=parts[0])
+            if len(parts) == 2:
+                current_fp = hashlib.sha256(employee.password.encode('utf-8')).hexdigest()[:16]
+                if parts[1] != current_fp:
+                    return Response({'error': 'Password reset link has already been used or is invalid.'}, status=status.HTTP_400_BAD_REQUEST)
 
             employee.set_password(password)
             employee.save()
@@ -420,10 +612,8 @@ class PasswordResetConfirmView(APIView):
             return Response({'message': 'Password has been successfully updated.'}, status=status.HTTP_200_OK)
         except SignatureExpired:
             return Response({'error': 'Password reset link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
-        except BadSignature:
+        except (BadSignature, ValueError, Employee.DoesNotExist):
             return Response({'error': 'Invalid password reset link.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # --------------------------------------------------------------------------------
@@ -501,12 +691,20 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
             if self.request.user.isSuperAdmin and self.request.user.organization is None:
                 org_id = self.request.query_params.get('organization_id')
                 if org_id:
-                    qs = qs.filter(organization_id=org_id)
+                    qs = qs.filter(memberships__organization_id=org_id, memberships__is_deleted=False)
                 elif self.request.query_params.get('backoffice_only') == 'true':
                     qs = qs.filter(organization__isnull=True)
             else:
-                qs = qs.filter(organization=self.request.user.organization)
-        return qs
+                active_org = getattr(self.request, 'active_organization', None)
+                if active_org:
+                    from django.db.models import Q
+                    qs = qs.filter(
+                        Q(memberships__organization=active_org, memberships__is_deleted=False) |
+                        Q(organization=active_org)
+                    )
+                else:
+                    return qs.none()
+        return qs.distinct().order_by('id')
 
     def check_permissions(self, request):
         super().check_permissions(request)
@@ -543,39 +741,73 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         )
 
     def perform_destroy(self, instance):
+        from users.models import OrganizationMembership
+
+        request_user = self.request.user
+        active_org = getattr(self.request, 'active_organization', None) or (request_user.organization if request_user and request_user.is_authenticated else None)
+
         name = f"{instance.first_name} {instance.last_name}".strip() or instance.email
         email = instance.email
-        instance.delete()
-        user = self.request.user
-        actor_name = f"{user.first_name} {user.last_name}".strip() or user.email
+
+        if active_org:
+            mem = OrganizationMembership.objects.filter(user=instance, organization=active_org).first()
+            if mem:
+                mem.is_active_in_org = False
+                mem.is_deleted = True
+                mem.employment_status = 'Deactivated'
+                mem.save()
+
+            # Check if employee has any other active memberships across all orgs
+            other_mems = OrganizationMembership.objects.filter(user=instance, is_deleted=False, is_active_in_org=True).exclude(organization=active_org).exists()
+            if not other_mems and not instance.isSuperAdmin:
+                instance.is_active = False
+                instance.save(update_fields=['is_active'])
+        else:
+            instance.delete()
+
+        actor_name = f"{request_user.first_name} {request_user.last_name}".strip() or request_user.email
         AuditLog.objects.create(
-            employee=user,
+            employee=request_user,
             employeeName=actor_name,
-            action="Employee Deleted",
-            details=f"Deleted employee profile for {name} ({email})."
+            action="Employee Removed",
+            details=f"Removed employee {name} ({email}) from organization membership."
         )
 
     @action(detail=False, methods=['post'], url_path='revoke')
     def revoke(self, request):
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+        from users.models import OrganizationMembership
+
         token = request.data.get('token')
         if not token:
             return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        signer = TimestampSigner()
+        signer = TimestampSigner(salt='revoke-registration')
         try:
             employee_id = signer.unsign(token, max_age=604800)
             employee = Employee.objects.get(id=employee_id)
             name = f"{employee.first_name} {employee.last_name}".strip() or employee.email
-            employee.delete()
+
+            mems = OrganizationMembership.objects.filter(user=employee, is_deleted=False)
+            if mems.count() <= 1:
+                employee.delete()
+            else:
+                target_org = getattr(request, 'active_organization', None) or employee.organization
+                if target_org:
+                    m = mems.filter(organization=target_org).first()
+                    if m:
+                        m.is_active_in_org = False
+                        m.is_deleted = True
+                        m.employment_status = 'Deactivated'
+                        m.save()
 
             AuditLog.objects.create(
                 employee=None,
                 employeeName=name,
                 action="Registration Revoked",
-                details="Revoked registration and deleted profile as requested."
+                details="Revoked registration link."
             )
-            return Response({'message': 'Registration successfully revoked and account deleted.'}, status=status.HTTP_200_OK)
+            return Response({'message': 'Registration successfully revoked.'}, status=status.HTTP_200_OK)
         except SignatureExpired:
             return Response({'error': 'Revocation link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
         except BadSignature:
@@ -585,18 +817,53 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
 
     @action(detail=True, methods=['post'], url_path='change-status')
     def change_status(self, request, pk=None):
+        from users.models import OrganizationMembership
+        from django.utils import timezone
+        from django.utils.dateparse import parse_date
+
         employee = self.get_object()
+        active_org = getattr(request, 'active_organization', None) or (request.user.organization if request.user and request.user.is_authenticated else None)
+
         new_status = request.data.get('status')
         VALID_STATUSES = ['Active', 'Deactivated', 'Terminated', 'Resigned']
         if not new_status or new_status not in VALID_STATUSES:
             return Response({'error': f'Invalid status. Allowed values: {", ".join(VALID_STATUSES)}'}, status=status.HTTP_400_BAD_REQUEST)
 
-        employee.employment_status = new_status
-        if new_status == 'Active':
-            employee.is_active = True
-        else:
-            employee.is_active = False
-        employee.save()
+        today = timezone.now().date()
+        mem = OrganizationMembership.objects.filter(user=employee, organization=active_org).first() if active_org else None
+
+        if new_status in ['Resigned', 'Terminated']:
+            lwd_raw = request.data.get('last_working_date') or request.data.get('lastWorkingDate')
+            if not lwd_raw:
+                return Response({'error': 'Last Working Date is required when status is Resigned or Terminated.'}, status=status.HTTP_400_BAD_REQUEST)
+            target_lwd = parse_date(str(lwd_raw)) if (lwd_raw and isinstance(lwd_raw, str)) else lwd_raw
+            if not target_lwd:
+                return Response({'error': 'Invalid Last Working Date format.'}, status=status.HTTP_400_BAD_REQUEST)
+            if employee.joining_date and target_lwd < employee.joining_date:
+                return Response({'error': 'Last working date cannot be earlier than joining date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if mem:
+                mem.employment_status = new_status
+                mem.last_working_date = target_lwd
+                mem.is_active_in_org = (target_lwd >= today)
+                mem.save()
+        elif new_status == 'Deactivated':
+            if mem:
+                mem.employment_status = 'Deactivated'
+                mem.is_active_in_org = False
+                mem.save()
+        elif new_status == 'Active':
+            if mem:
+                mem.employment_status = 'Active'
+                mem.is_active_in_org = True
+                mem.last_working_date = None
+                mem.save()
+
+        if active_org and active_org == employee.organization:
+            employee.employment_status = new_status
+            if new_status in ['Resigned', 'Terminated']:
+                employee.last_working_date = target_lwd
+            employee.save()
 
         user = request.user
         actor_name = f"{user.first_name} {user.last_name}".strip() or user.email if user and user.is_authenticated else "System"
@@ -604,7 +871,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
             employee=user if user and user.is_authenticated else None,
             employeeName=actor_name,
             action=f"Employee {new_status}",
-            details=f"Changed employment status of {employee.first_name} {employee.last_name} ({employee.email}) to '{new_status}'."
+            details=f"Changed employment status of {employee.first_name} {employee.last_name} ({employee.email}) to '{new_status}' in active organization."
         )
 
         serializer = self.get_serializer(employee)
@@ -619,7 +886,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         from django.core.mail import send_mail
         from django.core.signing import TimestampSigner
         from django.conf import settings as dj_settings
-        from users.models import Template
+        from users.models import Role, Template
         from attendance.models import Schedule
 
         file_obj = request.FILES.get('file')
@@ -657,7 +924,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         failed_rows = []
 
         # List of existing/valid roles
-        valid_roles = list(Template.objects.values_list('name', flat=True)) + list(Schedule.objects.values_list('designation', flat=True))
+        valid_roles = list(Role.objects.filter(is_active=True).values_list('name', flat=True)) + list(Schedule.objects.values_list('designation', flat=True))
         valid_roles = [r.lower().strip() for r in valid_roles]
 
         for idx, row in df.iterrows():
@@ -678,9 +945,13 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
                 failed_rows.append({"row": row_num, "email": email, "reason": "Missing Full Name"})
                 continue
 
-            # Duplicate email validation in DB:
-            if Employee.objects.filter(email=email).exists():
-                failed_rows.append({"row": row_num, "email": email, "reason": "Email Already Exists"})
+            # Target active organization
+            org = getattr(request, 'active_organization', None) or (request.user.organization if request.user and request.user.is_authenticated else None)
+
+            # Duplicate membership validation in target DB organization:
+            from users.models import OrganizationMembership
+            if OrganizationMembership.objects.filter(user__email__iexact=email, organization=org, is_active_in_org=True, is_deleted=False).exists():
+                failed_rows.append({"row": row_num, "email": email, "reason": "Email Already Exists in this Organization"})
                 continue
 
             # Email format validation
@@ -706,48 +977,88 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
                 failed_rows.append({"row": row_num, "email": email, "reason": f"Designation Role '{invalid_role_found}' does not exist"})
                 continue
 
-            # Database creation & email dispatch
+            # Multi-org Classification & creation / rehire
             name_parts = full_name.split(' ', 1)
             first_name = name_parts[0]
             last_name = name_parts[1] if len(name_parts) > 1 else 'User'
 
-            org = request.user.organization if request.user.is_authenticated else None
+            from users.api.v1.services import UserService
+            existing = Employee.objects.filter(email__iexact=email).first()
 
             try:
-                # Check Organization limit first:
-                if org and org.settings:
-                    limit = org.settings.max_employees_allowed
-                    current_count = Employee.objects.filter(organization=org).count() + len(successful_onboards)
-                    if current_count >= limit:
-                        failed_rows.append({"row": row_num, "email": email, "reason": f"Organization employee cap of {limit} reached"})
-                        continue
+                if existing:
+                    # Existing Global User -> Create or reactivate membership in target org
+                    mem = OrganizationMembership.objects.filter(user=existing, organization=org).first()
+                    if mem:
+                        mem.employment_status = 'Active'
+                        mem.is_active_in_org = True
+                        mem.is_deleted = False
+                        mem.last_working_date = None
+                        if designations and designations != 'nan':
+                            mem.designation = designations
+                        mem.save()
+                    else:
+                        OrganizationMembership.objects.create(
+                            user=existing,
+                            organization=org,
+                            designation=designations if (designations and designations != 'nan') else '',
+                            employment_status='Active',
+                            is_active_in_org=True
+                        )
 
-                # Generate random password
-                from core.utils import generate_secure_password
-                from users.api.v1.services import UserService
-                raw_password = generate_secure_password(12)
+                    # Update basic details if present
+                    existing.first_name = first_name
+                    existing.last_name = last_name
+                    if phone and phone != 'nan':
+                        existing.phone = phone
+                    existing.save()
 
-                employee = Employee.objects.create_user(
-                    email=email,
-                    username=email,
-                    password=raw_password,
-                    first_name=first_name,
-                    last_name=last_name,
-                    phone=phone if (phone and phone != 'nan') else '',
-                    designation=designations if (designations and designations != 'nan') else '',
-                    organization=org,
-                    isSuperAdmin=False,
-                    useDefaultPermissions=True
-                )
+                    # Queue welcome email for existing user joining org
+                    try:
+                        from django.db import transaction
+                        transaction.on_commit(
+                            lambda emp=existing: UserService.send_welcome_email(emp, synchronous=False)
+                        )
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger(__name__).error("Failed to queue welcome email for %s: %s", email, exc)
 
-                # Send onboarding credential email
+                    employee = existing
+
+                else:
+                    # Brand-New Global User
+                    from core.utils import generate_secure_password
+                    raw_password = generate_secure_password(12)
+
+                    employee = Employee.objects.create_user(
+                        email=email,
+                        username=email,
+                        password=raw_password,
+                        first_name=first_name,
+                        last_name=last_name,
+                        phone=phone if (phone and phone != 'nan') else '',
+                        designation=designations if (designations and designations != 'nan') else '',
+                        organization=org,
+                        isSuperAdmin=False,
+                        useDefaultPermissions=True
+                    )
+
+                    # Send onboarding credential email asynchronously via Celery after DB transaction commits
+                    try:
+                        from django.db import transaction
+                        transaction.on_commit(
+                            lambda emp=employee, pwd=raw_password: UserService.send_admin_onboarding_email(emp, pwd, synchronous=False)
+                        )
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger(__name__).error("Failed to queue onboarding email for %s: %s", email, exc)
+
+                # Sync shadow membership for Phase 2A coverage
                 try:
-                    UserService.send_admin_onboarding_email(employee, raw_password, synchronous=True)
-                except Exception:
-                    # SMTP Delivery Failed — delete created user so admin can fix and re-onboard
-                    employee.delete()
-                    failed_rows.append({"row": row_num, "email": email, "reason": "SMTP Mail Delivery Failed"})
-                    continue
+                    UserService.sync_employee_shadow_membership(employee)
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Failed to sync shadow membership for %s: %s", email, exc)
 
                 # Log audit
                 actor_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.email if request.user.is_authenticated else "System/Registration"

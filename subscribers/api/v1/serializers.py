@@ -134,6 +134,7 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
     employee_email = serializers.SerializerMethodField()
     organization_name = serializers.SerializerMethodField()
     wallet_balance = serializers.SerializerMethodField()
+    invoice_id = serializers.SerializerMethodField()
 
     class Meta:
         model = WalletTransaction
@@ -152,6 +153,37 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
     def get_wallet_balance(self, obj):
         if obj.wallet:
             return str(obj.wallet.balance)
+        return None
+
+    def get_invoice_id(self, obj):
+        if obj.invoice_url and '/monthly-invoices/' in obj.invoice_url:
+            try:
+                parts = obj.invoice_url.split('/monthly-invoices/')[1].split('/')
+                return int(parts[0])
+            except (IndexError, ValueError, TypeError):
+                pass
+        if obj.transactionType == 'Debit' and obj.wallet and obj.wallet.organization_id:
+            from subscribers.models import MonthlyInvoice
+            import re
+            m = re.search(r'for\s+([A-Za-z]+\s+\d{4})', obj.details or '')
+            if m:
+                from datetime import datetime
+                try:
+                    dt = datetime.strptime(m.group(1), '%B %Y').date()
+                    inv = MonthlyInvoice.objects.filter(
+                        organization_id=obj.wallet.organization_id,
+                        billing_month=dt.replace(day=1)
+                    ).first()
+                    if inv:
+                        return inv.id
+                except Exception:
+                    pass
+            inv = MonthlyInvoice.objects.filter(
+                organization_id=obj.wallet.organization_id,
+                created_at__lte=obj.created_at
+            ).order_by('-id').first()
+            if inv:
+                return inv.id
         return None
 
     def to_representation(self, instance):
@@ -176,7 +208,7 @@ class WalletSerializer(serializers.ModelSerializer):
         model = Wallet
         fields = [
             'id', 'employee', 'employee_email', 'employee_name', 'balance',
-            'stripe_customer_id', 'transactions', 'createdAt', 'updatedAt',
+            'razorpay_customer_id', 'stripe_customer_id', 'transactions', 'createdAt', 'updatedAt',
             'attendance_module_price', 'tasks_module_price'
         ]
 
@@ -184,50 +216,11 @@ class WalletSerializer(serializers.ModelSerializer):
         return f"{obj.employee.first_name} {obj.employee.last_name}".strip() or obj.employee.email
 
     def get_attendance_module_price(self, obj):
-        # Use the SubscriptionPackage price — same value shown in the backoffice Registered Modules table.
-        # Prefer a package explicitly named 'Attendance Management'; exclude free packages (price=0).
-        pkg = (
-            SubscriptionPackage.objects
-            .filter(features__icontains='attendance', isActive=True)
-            .exclude(price=0)
-            .order_by('-price')  # highest-priced standalone module first (avoids cheap bundles)
-            .first()
-        )
-        # Further narrow: prefer the one whose name includes 'Attendance'
-        named_pkg = (
-            SubscriptionPackage.objects
-            .filter(name__icontains='attendance', isActive=True)
-            .exclude(price=0)
-            .first()
-        )
-        if named_pkg:
-            return str(named_pkg.price)
-        if pkg:
-            return str(pkg.price)
-        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        g_settings = GlobalBillingSettings.get_settings()
         return str(g_settings.attendance_module_price)
 
     def get_tasks_module_price(self, obj):
-        # Use the SubscriptionPackage price — same value shown in the backoffice Registered Modules table.
-        # Prefer a package explicitly named 'Project & Tasks Management'; exclude free packages.
-        named_pkg = (
-            SubscriptionPackage.objects
-            .filter(name__icontains='project', isActive=True)
-            .exclude(price=0)
-            .first()
-        )
-        if named_pkg:
-            return str(named_pkg.price)
-        pkg = (
-            SubscriptionPackage.objects
-            .filter(features__icontains='project', isActive=True)
-            .exclude(price=0)
-            .order_by('price')
-            .first()
-        )
-        if pkg:
-            return str(pkg.price)
-        g_settings, _ = GlobalBillingSettings.objects.get_or_create(id=1)
+        g_settings = GlobalBillingSettings.get_settings()
         return str(g_settings.tasks_module_price)
 
     def to_representation(self, instance):
@@ -258,7 +251,29 @@ class GlobalBillingSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GlobalBillingSettings
-        fields = '__all__'
+        fields = [
+            'id',
+            'monthly_subscription_price',
+            'monthly_data_rent',
+            'attendance_module_price',
+            'tasks_module_price',
+            'employee_seat_price',
+            'grace_period_days',
+            'reminder_email_days_before',
+            'auto_deduction_day',
+            'invoice_generation_day',
+            'currency',
+            'tax_percentage',
+            'storage_credit_size_bytes',
+            'storage_credit_monthly_price',
+            'storage_billing_enabled',
+            'attendance_daily_price',
+            'tasks_daily_price',
+            'days_in_current_month',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_days_in_current_month(self, obj):
         import calendar
@@ -287,3 +302,17 @@ class GlobalBillingSettingsSerializer(serializers.ModelSerializer):
             return "0.00"
         daily = Decimal(str(obj.tasks_module_price)) / Decimal(str(total_days))
         return str(daily.quantize(Decimal('0.01')))
+
+    def validate_storage_credit_size_bytes(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError(
+                "Storage credit size must be greater than 0."
+            )
+        return value
+
+    def validate_storage_credit_monthly_price(self, value):
+        if value is None or value < 0:
+            raise serializers.ValidationError(
+                "Storage credit monthly price must be greater than or equal to 0."
+            )
+        return value

@@ -10,13 +10,23 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+import re
+
+def sanitize_email_log_content(text):
+    if not text or not isinstance(text, str):
+        return text
+    text = re.sub(r'(<strong>\s*Password:\s*</strong>\s*)([^\s<]+)', r'\1[PROTECTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r'(Password:\s*)([^\s<]+)', r'\1[PROTECTED]', text, flags=re.IGNORECASE)
+    text = re.sub(r'(token=)[A-Za-z0-9._:\-]+', r'\1[PROTECTED_TOKEN]', text)
+    return text
+
 @shared_task
 def send_email_task(recipient, subject, body, from_email=None, html_body=None):
     from core.models import EmailLog
     log = EmailLog.objects.create(
         recipient=recipient,
         subject=subject,
-        body=body or html_body,
+        body=sanitize_email_log_content(body or html_body),
         from_email=from_email or getattr(settings, 'DEFAULT_FROM_EMAIL', None),
         status='PENDING'
     )
@@ -46,7 +56,7 @@ def send_transactional_email_task(recipient, subject, html_content):
     log = EmailLog.objects.create(
         recipient=recipient,
         subject=subject,
-        body=html_content,
+        body=sanitize_email_log_content(html_content),
         from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', None),
         status='PENDING'
     )
@@ -89,12 +99,13 @@ class EmailService:
 
     @staticmethod
     def send_transactional_email(recipient, subject, html_content, template_type=None, password=None, synchronous=False):
-        if synchronous:
+        if synchronous or password is not None:
             from core.models import EmailLog
+            sanitized_body = sanitize_email_log_content(html_content)
             log = EmailLog.objects.create(
                 recipient=recipient,
                 subject=subject,
-                body=html_content,
+                body=sanitized_body,
                 from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', None),
                 status='PENDING'
             )
@@ -114,7 +125,7 @@ class EmailService:
                 log.status = 'FAILED'
                 log.error_message = str(e)
                 log.save()
-                logger.error(f"Failed to send synchronous email: {e}")
+                logger.error(f"Failed to send synchronous credential email: {e}")
                 raise e
         else:
             try:

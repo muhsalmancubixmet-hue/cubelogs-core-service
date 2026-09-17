@@ -85,7 +85,7 @@ class Lead(BaseModel):
         ('In Progress', 'In Progress'),
         ('Closed', 'Closed'),
     ]
-    name = models.CharField(max_length=255)
+    name = models.CharField(max_length=255, blank=True, null=True)
     email = models.EmailField()
     phone = models.CharField(max_length=50, blank=True, null=True)
     companyName = models.CharField(max_length=255, blank=True, null=True)

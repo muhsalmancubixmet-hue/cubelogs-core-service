@@ -42,7 +42,8 @@
         "required_subscription_flag": "is_project_enabled"
       },
       "navigation": [
-        { "id": "projects", "label": "Projects", "path": "/projects", "permission": "projects:view" }
+        { "id": "projects", "label": "Projects", "path": "/projects", "permission": "projects:view" },
+        { "id": "tasks", "label": "Tasks", "path": "/tasks", "permission": "project_tasks:view_own" }
       ],
       "functional_capabilities": [
         { "id": "projects:view", "label": "View Projects", "path": "/projects", "tab": "" },

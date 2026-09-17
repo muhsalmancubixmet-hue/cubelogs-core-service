@@ -24,12 +24,15 @@ from projects.selectors.stories import stories_for_user
 from projects.selectors.tasks import tasks_for_user
 from projects.selectors.epics import epics_for_user
 from projects.selectors.sprints import sprints_for_user
+from projects.rich_text_utils import validate_rich_text_no_base64
 
 
 # --------------------------------------------------------------------------------
 # ProjectStatusOption Serializers
 # --------------------------------------------------------------------------------
 class ProjectStatusOptionSerializer(serializers.ModelSerializer):
+    category = serializers.CharField(required=False)
+
     class Meta:
         model = ProjectStatusOption
         fields = [
@@ -69,6 +72,16 @@ class ProjectStatusOptionSerializer(serializers.ModelSerializer):
             code = attrs.get('code', '')
             if ProjectStatusOption.objects.filter(company=company, code=code).exists():
                 raise serializers.ValidationError({'code': 'A status with this code already exists for your company.'})
+
+        progress_pct = attrs.get('progress_percentage', getattr(self.instance, 'progress_percentage', None))
+        if progress_pct is not None and not (self.instance and self.instance.is_system):
+            if progress_pct == 0:
+                attrs['category'] = 'pending'
+            elif progress_pct == 100:
+                attrs['category'] = 'completed'
+            else:
+                attrs['category'] = 'active'
+
         return attrs
 
 
@@ -166,6 +179,9 @@ class ProjectEpicSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError({"project": "Project not found or inaccessible."})
         return attrs
 
+    def validate_description(self, value):
+        return validate_rich_text_no_base64(value, field_name='description')
+
 
 # --------------------------------------------------------------------------------
 # Project Sprint Serializers
@@ -207,6 +223,9 @@ class ProjectSprintSerializer(serializers.ModelSerializer):
                 if not projects_for_user(user).filter(id=project.id).exists():
                     raise serializers.ValidationError({"project": "Project not found or inaccessible."})
         return attrs
+
+    def validate_goal(self, value):
+        return validate_rich_text_no_base64(value, field_name='goal')
 
     def get_cancelled_by_name(self, obj):
         if obj.cancelled_by:
@@ -282,7 +301,9 @@ class ProjectStoryMemberCreateSerializer(serializers.Serializer):
         if ProjectStoryMember.objects.filter(story=story, member=member).exists():
             raise serializers.ValidationError("This member is already assigned to this story.")
 
-        self.context['resolved_member'] = member
+        if isinstance(self.context, dict):
+            self.context['resolved_member'] = member
+        self.resolved_member = member
         return value
 
 
@@ -408,6 +429,9 @@ class ProjectTaskSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    def validate_description(self, value):
+        return validate_rich_text_no_base64(value, field_name='description')
+
 
 class ProjectStoryMemberSerializer(serializers.ModelSerializer):
     user = serializers.ReadOnlyField(source='member.user.id')
@@ -502,6 +526,12 @@ class ProjectStorySerializer(serializers.ModelSerializer):
             if 'story_points' in attrs and attrs['story_points'] not in FIBONACCI_STORY_POINTS:
                 raise serializers.ValidationError({"story_points": f"Valid Fibonacci Story Points required ({FIBONACCI_STORY_POINTS})."})
         return attrs
+
+    def validate_description(self, value):
+        return validate_rich_text_no_base64(value, field_name='description')
+
+    def validate_acceptance_criteria(self, value):
+        return validate_rich_text_no_base64(value, field_name='acceptance_criteria')
 
 
 # --------------------------------------------------------------------------------
@@ -606,6 +636,9 @@ class ProjectCreateSerializer(serializers.ModelSerializer):
                     raise serializers.ValidationError("Selected Team Lead is not an active employee.")
         return value
 
+    def validate_description(self, value):
+        return validate_rich_text_no_base64(value, field_name='description')
+
 
 class ProjectUpdateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -632,6 +665,9 @@ class ProjectUpdateSerializer(serializers.ModelSerializer):
                 if not value.is_active:
                     raise serializers.ValidationError("Selected Team Lead is not an active employee.")
         return value
+
+    def validate_description(self, value):
+        return validate_rich_text_no_base64(value, field_name='description')
 
 
 # --------------------------------------------------------------------------------
@@ -721,8 +757,10 @@ class ProjectAttachmentSerializer(serializers.ModelSerializer):
         return 'application/octet-stream'
 
     def validate_file(self, value):
-        if value and value.size > 10 * 1024 * 1024:
-            raise serializers.ValidationError("File size exceeds maximum limit of 10MB.")
+        from django.conf import settings
+        max_size = getattr(settings, 'MAX_ATTACHMENT_UPLOAD_SIZE', 2 * 1024 * 1024 * 1024)
+        if value and value.size > max_size:
+            raise serializers.ValidationError(f"File size exceeds maximum limit of {max_size // (1024*1024)}MB.")
         return value
 
     def validate(self, attrs):
@@ -802,6 +840,18 @@ class ProjectCommentSerializer(serializers.ModelSerializer):
         if not comment_text and not has_attachments:
             raise serializers.ValidationError({"comment": ["Comment text or at least one attachment is required."]})
 
+        # Enforce maximum 10 attachments per message
+        to_link_ids = set()
+        if attachment_ids and isinstance(attachment_ids, list):
+            to_link_ids.update([int(aid) for aid in attachment_ids if str(aid).isdigit()])
+        if draft_token and user:
+            from projects.models import ProjectAttachment
+            draft_ids = ProjectAttachment.objects.filter(draft_token=draft_token, uploaded_by=user).values_list('id', flat=True)
+            to_link_ids.update(draft_ids)
+
+        if len(to_link_ids) > 10:
+            raise serializers.ValidationError({"detail": "A maximum of 10 attachments is allowed per message."})
+
         return attrs
 
 
@@ -843,6 +893,9 @@ class ProjectRetrospectiveItemSerializer(serializers.ModelSerializer):
         if not obj.created_by:
             return 'Anonymous' if getattr(obj.retrospective, 'is_anonymous', False) else 'Team Member'
         return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or obj.created_by.email
+
+    def validate_text(self, value):
+        return validate_rich_text_no_base64(value, field_name='text')
 
 
 class ProjectRetrospectiveSerializer(serializers.ModelSerializer):

@@ -84,6 +84,43 @@ class OrgSettings(BaseModel):
     default_weekly_holidays = models.JSONField(default=default_weekly_holidays_default, blank=True)
     monthly_recurring_holidays = models.JSONField(default=list, blank=True)
     yearly_recurring_holidays = models.JSONField(default=list, blank=True)
+    payroll_currency = models.CharField(max_length=10, default='INR')
+    payroll_proration_basis = models.CharField(
+        max_length=20,
+        choices=[
+            ('WORKING_DAYS', 'Working Days'),
+            ('CALENDAR_DAYS', 'Calendar Days'),
+            ('FIXED_30', 'Fixed 30 Days'),
+        ],
+        default='WORKING_DAYS'
+    )
+    daily_wage_paid_leave_eligible = models.BooleanField(
+        default=True,
+        help_text="When True, approved paid leaves contribute to daily wage payable days."
+    )
+    hourly_wage_paid_leave_eligible = models.BooleanField(
+        default=True,
+        help_text="When True, approved paid leaves contribute scheduled payable hours for hourly wage employees."
+    )
+    company_address = models.TextField(blank=True, null=True, help_text="Official business address")
+    company_phone = models.CharField(max_length=50, blank=True, null=True)
+    company_email = models.EmailField(blank=True, null=True)
+    billing_email = models.EmailField(blank=True, null=True, help_text="Optional organization billing contact email for invoices and notifications")
+    company_tax_id = models.CharField(max_length=50, blank=True, null=True, help_text="Tax / VAT / TRN / Registration Number")
+    payroll_frequency = models.CharField(
+        max_length=20,
+        choices=[('MONTHLY', 'Monthly')],
+        default='MONTHLY',
+        help_text="Organization payroll processing frequency"
+    )
+    payroll_processing_day = models.IntegerField(
+        default=28,
+        help_text="Planned day of month for processing monthly payroll (1-31)"
+    )
+    salary_payment_day = models.IntegerField(
+        default=1,
+        help_text="Planned day of month for disbursing monthly salaries (1-31)"
+    )
 
     @property
     def is_attendance_enabled(self) -> bool:
@@ -92,11 +129,19 @@ class OrgSettings(BaseModel):
         if not hasattr(self, 'organization') or not self.organization:
             return False
         try:
-            return OrganizationModule.objects.filter(
+            if OrganizationModule.objects.filter(
                 organization=self.organization,
                 module_id='attendance',
-                enabled=True
-            ).exists()
+                enabled=False
+            ).exists():
+                return False
+            if OrganizationModule.objects.filter(organization=self.organization, module_id='attendance').exists():
+                return OrganizationModule.objects.filter(
+                    organization=self.organization,
+                    module_id='attendance',
+                    enabled=True
+                ).exists()
+            return True
         except Exception:
             return False
 
@@ -125,11 +170,22 @@ class OrgSettings(BaseModel):
         if not hasattr(self, 'organization') or not self.organization:
             return False
         try:
-            return OrganizationModule.objects.filter(
+            if OrganizationModule.objects.filter(
                 organization=self.organization,
                 module_id__in=['project_management', 'tasks', 'project'],
-                enabled=True
-            ).exists()
+                enabled=False
+            ).exists():
+                return False
+            if OrganizationModule.objects.filter(
+                organization=self.organization,
+                module_id__in=['project_management', 'tasks', 'project']
+            ).exists():
+                return OrganizationModule.objects.filter(
+                    organization=self.organization,
+                    module_id__in=['project_management', 'tasks', 'project'],
+                    enabled=True
+                ).exists()
+            return True
         except Exception:
             return False
 
@@ -248,6 +304,9 @@ class AuditLog(models.Model):
 
     class Meta:
         db_table = 'api_auditlog'
+        indexes = [
+            models.Index(fields=['organization', '-createdAt'], name='auditlog_org_created_idx'),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.organization and self.employee and self.employee.organization:

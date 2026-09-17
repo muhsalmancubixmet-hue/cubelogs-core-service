@@ -13,6 +13,11 @@ from django.utils import timezone
 # APPLICATION SPECIFIC
 from core.models import AuditLog
 from attendance.models import AttendanceLog
+from attendance.services import (
+    get_attendance_policy, save_attendance_policy,
+    get_daily_attendance_summary, get_monthly_attendance_summary,
+    is_holiday_or_weekly_off
+)
 
 class AttendanceService:
     @staticmethod
@@ -29,7 +34,8 @@ class AttendanceService:
             photo = verification_data.get('photo')
 
         org = employee.organization
-        auto_approve = getattr(org.settings, 'auto_approve_attendance', False) if org and org.settings else False
+        policy = get_attendance_policy(org, today) if org else None
+        auto_approve = policy.auto_approve_attendance if policy else False
         initial_status = 'Approved' if auto_approve else 'Pending Approval'
 
         now = timezone.now()

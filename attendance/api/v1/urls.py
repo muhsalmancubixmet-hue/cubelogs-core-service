@@ -15,11 +15,15 @@ from attendance.api.v1.views import (
     AttendanceLogViewSet, LeaveTypeViewSet, LeaveViewSet,
     HolidayViewSet, TemplateViewSet, OfficeLocationViewSet, ScheduleViewSet,
     OrgSettingsViewSet, AuditLogViewSet, HolidaySettingsView,
-    AttendanceApprovalView, HRAttendanceDashboardView
+    AttendanceApprovalView, HRAttendanceDashboardView, AttendancePolicyViewSet,
+    DailyAttendanceSummaryView, AttendancePeriodViewSet
 )
 
 router = DefaultRouter()
+router.register('attendance/periods', AttendancePeriodViewSet, basename='attendance-periods')
+router.register('periods', AttendancePeriodViewSet, basename='attendance-period')
 router.register('attendance', AttendanceLogViewSet, basename='attendance')
+router.register('policies', AttendancePolicyViewSet, basename='policy')
 router.register('leave-types', LeaveTypeViewSet, basename='leave-type')
 router.register('leaves', LeaveViewSet, basename='leave')
 router.register('holidays', HolidayViewSet, basename='holiday')
@@ -30,8 +34,10 @@ router.register('audit-logs', AuditLogViewSet, basename='audit-log')
 
 urlpatterns = [
     # HR Attendance Management
+    path('attendance/daily-summary/', DailyAttendanceSummaryView.as_view(), name='attendance-daily-summary'),
     path('attendance/hr-dashboard/', HRAttendanceDashboardView.as_view(), name='attendance-hr-dashboard'),
     path('attendance/<int:pk>/approve/', AttendanceApprovalView.as_view(), name='attendance-approve'),
+    path('attendance/approve/<int:pk>/', AttendanceApprovalView.as_view(), name='attendance-approve-alt'),
 
     # Org Settings
     path('settings/', OrgSettingsViewSet.as_view({'get': 'list', 'put': 'update', 'patch': 'partial_update'}), name='org-settings'),

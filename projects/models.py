@@ -343,6 +343,9 @@ class ProjectTask(BaseModel):
     assigned_to = models.ForeignKey(
         'users.Employee', on_delete=models.SET_NULL, null=True, blank=True, related_name='project_tasks'
     )
+    assigned_to_profile = models.ForeignKey(
+        'users.EmployeeProfile', on_delete=models.SET_NULL, null=True, blank=True, related_name='project_tasks'
+    )
     priority = models.CharField(max_length=50, choices=PriorityChoices.choices, default=PriorityChoices.MEDIUM)
     status = models.ForeignKey(
         ProjectStatusOption, on_delete=models.PROTECT, null=True, blank=True, related_name='tasks'
@@ -367,7 +370,25 @@ class ProjectTask(BaseModel):
             # Composite indexes for Scrum board task column grouping and backlog assignment queries
             models.Index(fields=['story', 'status'], name='task_story_status_idx'),
             models.Index(fields=['story', 'assigned_to'], name='task_story_assignee_idx'),
+            models.Index(fields=['assigned_to', 'status'], name='task_assignee_status_idx'),
+            models.Index(fields=['assigned_to_profile', 'status'], name='task_prof_status_idx'),
         ]
+
+    def save(self, *args, **kwargs):
+        if self.assigned_to_id and not self.assigned_to_profile_id:
+            try:
+                from users.models import EmployeeProfile
+                prof = EmployeeProfile.objects.filter(user_id=self.assigned_to_id).first()
+                if prof:
+                    self.assigned_to_profile_id = prof.id
+            except Exception:
+                pass
+        elif self.assigned_to_profile_id and not self.assigned_to_id:
+            try:
+                self.assigned_to_id = self.assigned_to_profile.user_id
+            except Exception:
+                pass
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.title
@@ -490,12 +511,8 @@ class ProjectAttachment(models.Model):
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        if self.file:
-            try:
-                self.file.delete(save=False)
-            except Exception:
-                pass
         super().delete(*args, **kwargs)
+
 
     def __str__(self):
         return f"Attachment {self.file_name} by {self.uploaded_by.email}"

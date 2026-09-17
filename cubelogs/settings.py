@@ -34,6 +34,8 @@ env = environ.Env(
     CSRF_TRUSTED_ORIGINS=(list, []),
     EMAIL_PORT=(int, 587),
     EMAIL_USE_TLS=(bool, True),
+    EMAIL_USE_SSL=(bool, False),
+    CELERY_TASK_ALWAYS_EAGER=(bool, False),
 )
 
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
@@ -66,12 +68,34 @@ CORS_ALLOWED_ORIGINS = env.list(
     default=[],
 )
 
+CSRF_TRUSTED_ORIGINS = env.list(
+    "CSRF_TRUSTED_ORIGINS",
+    default=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://192.168.220.36:3000",
+        "http://192.168.220.36:3001",
+        "http://192.168.220.39:3000",
+        "http://192.168.220.39:3001",
+        "http://192.168.220.44:3000",
+        "http://192.168.220.44:3001",
+        "https://cubelogs-dashboard.vercel.app",
+        "https://cubelogs-website.vercel.app",
+    ],
+)
+
 if is_dev:
     dev_origins = [
         "http://localhost:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
         "http://192.168.220.36:3000",
         "http://192.168.220.36:3001",
         "http://192.168.220.42:3000",
@@ -87,41 +111,33 @@ if is_dev:
             if not ip.startswith("127."):
                 dev_origins.append(f"http://{ip}:3000")
                 dev_origins.append(f"http://{ip}:3001")
+                dev_origins.append(f"http://{ip}:8000")
     except Exception:
         pass
 
     for origin in dev_origins:
         if origin not in CORS_ALLOWED_ORIGINS:
             CORS_ALLOWED_ORIGINS.append(origin)
+        if origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(origin)
 
 CORS_ALLOW_CREDENTIALS = True
+from corsheaders.defaults import default_headers
 
-CSRF_TRUSTED_ORIGINS = env.list(
-    "CSRF_TRUSTED_ORIGINS",
-    default=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://192.168.220.36:3000",
-        "http://192.168.220.36:3001",
-        "http://192.168.220.42:3000",
-        "http://192.168.220.42:3001",
-        "http://192.168.220.44:3000",
-        "http://192.168.220.44:3001",
-        "https://cubelogs-dashboard.vercel.app",
-        "https://cubelogs-website.vercel.app",
-    ],
-)
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-organization-id',
+]
 
 
 # ------------------------------------------------------------------------------
-#       Stripe Configuration
+#       Razorpay Configuration
 # ------------------------------------------------------------------------------
-# Integration key settings for Stripe payment gateways.
+# Integration key settings for Razorpay payment gateway.
 # ------------------------------------------------------------------------------
-STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY')
-STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET')
+RAZORPAY_KEY_ID = env('RAZORPAY_KEY_ID', default=None)
+RAZORPAY_KEY_SECRET = env('RAZORPAY_KEY_SECRET', default=None)
+RAZORPAY_WEBHOOK_SECRET = env('RAZORPAY_WEBHOOK_SECRET', default=None)
+ALLOW_MOCK_PAYMENTS = env.bool('ALLOW_MOCK_PAYMENTS', default=False)
 
 
 # ------------------------------------------------------------------------------
@@ -134,10 +150,16 @@ STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET')
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 EMAIL_HOST = env('EMAIL_HOST', default='smtp.gmail.com')
 EMAIL_PORT = env('EMAIL_PORT')
-EMAIL_HOST_USER = env('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD')
+EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='muhsalman.cubixmet@gmail.com')
+EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = env('EMAIL_USE_TLS')
-DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL')
+EMAIL_USE_SSL = env('EMAIL_USE_SSL')
+DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='muhsalman.cubixmet@gmail.com')
+
+# File Upload Configuration
+DATA_UPLOAD_MAX_MEMORY_SIZE = env.int('DATA_UPLOAD_MAX_MEMORY_SIZE', default=2 * 1024 * 1024 * 1024)  # 2 GB
+FILE_UPLOAD_MAX_MEMORY_SIZE = env.int('FILE_UPLOAD_MAX_MEMORY_SIZE', default=20 * 1024 * 1024)        # 20 MB (spools to disk)
+MAX_ATTACHMENT_UPLOAD_SIZE = env.int('MAX_ATTACHMENT_UPLOAD_SIZE', default=2 * 1024 * 1024 * 1024)   # 2 GB
 
 
 # ------------------------------------------------------------------------------
@@ -166,6 +188,8 @@ INSTALLED_APPS = [
     'company',
     'projects',
     'subscribers',
+    'payroll',
+    'storage_billing',
 ]
 
 
@@ -182,6 +206,7 @@ MIDDLEWARE = [
     'core.middleware.APICSRFExemptMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'core.middleware.TenantContextMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -237,6 +262,9 @@ TEMPLATES = [
 DATABASES = {
     'default': env.db('DATABASE_URL')
 }
+
+if DATABASES['default'].get('ENGINE') == 'django.db.backends.sqlite3':
+    DATABASES['default'].setdefault('OPTIONS', {})['timeout'] = 20
 
 # if not is_dev and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
 #     from django.core.exceptions import ImproperlyConfigured
@@ -306,10 +334,10 @@ REST_FRAMEWORK = {
 }
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'None'
+SESSION_COOKIE_SAMESITE = 'None' if not is_dev else 'Lax'
 SESSION_COOKIE_SECURE = not is_dev   # True in production (HTTPS only)
 CSRF_COOKIE_HTTPONLY = False          # Must stay False — JS needs to read the CSRF token
-CSRF_COOKIE_SAMESITE = 'None'
+CSRF_COOKIE_SAMESITE = 'None' if not is_dev else 'Lax'
 CSRF_COOKIE_SECURE = not is_dev       # True in production (HTTPS only)
 
 
@@ -380,15 +408,24 @@ if is_testing:
 # ------------------------------------------------------------------------------
 # Background broker targets, beat recurrence schedules, and queues.
 # ------------------------------------------------------------------------------
-CELERY_BROKER_URL = env('CELERY_BROKER_URL')
+CELERY_BROKER_URL = 'memory://' if is_testing else env('CELERY_BROKER_URL')
 CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='django-db')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_TASK_ALWAYS_EAGER = is_dev
+CELERY_TASK_ALWAYS_EAGER = True if is_testing else env('CELERY_TASK_ALWAYS_EAGER', default=False)
+CELERY_TASK_STORE_EAGER_RESULT = True if is_testing else env('CELERY_TASK_STORE_EAGER_RESULT', default=True)
 
+ALLOW_MOCK_PAYMENTS = env('ALLOW_MOCK_PAYMENTS', cast=bool, default=False)
 TEST_MODE = False
+
+# ------------------------------------------------------------------------------
+#       Storage Billing Metering Settings
+# ------------------------------------------------------------------------------
+STORAGE_METERING_START_DATE = env('STORAGE_METERING_START_DATE', default='2026-09-09')
+STORAGE_BILLING_FIRST_USAGE_MONTH = env('STORAGE_BILLING_FIRST_USAGE_MONTH', default='2026-10-01')
+STORAGE_FIRST_BILLABLE_USAGE_MONTH = STORAGE_BILLING_FIRST_USAGE_MONTH
 
 if TEST_MODE:
     CELERY_BEAT_SCHEDULE = {
@@ -398,10 +435,19 @@ if TEST_MODE:
         },
     }
 else:
+    from celery.schedules import crontab
     CELERY_BEAT_SCHEDULE = {
-        'sweep-workspace-subscriptions-every-minute': {
+        'sweep-workspace-subscriptions-daily': {
             'task': 'company.tasks.sweep_workspace_subscriptions',
-            'schedule': timedelta(minutes=1),
+            'schedule': crontab(hour='0,12', minute=15),
+        },
+        'reconcile-pending-wallet-transactions': {
+            'task': 'company.tasks.reconcile_pending_wallet_transactions',
+            'schedule': crontab(hour='*/6', minute=30),
+        },
+        'audit-workspace-storage-daily': {
+            'task': 'storage_billing.tasks.audit_workspace_storage',
+            'schedule': crontab(hour='0,12', minute=5),
         },
     }
 
