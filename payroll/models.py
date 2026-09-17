@@ -58,6 +58,13 @@ class EmployeeSalaryStructure(BaseModel):
         on_delete=models.CASCADE,
         related_name='salary_structures'
     )
+    employee_profile = models.ForeignKey(
+        'users.EmployeeProfile',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='salary_structures'
+    )
     effective_from = models.DateField(db_index=True)
     currency = models.CharField(max_length=10, default='INR')
 
@@ -104,6 +111,22 @@ class EmployeeSalaryStructure(BaseModel):
                 name='unique_emp_salary_effective_date'
             )
         ]
+
+    def save(self, *args, **kwargs):
+        if self.employee_id and not self.employee_profile_id:
+            try:
+                from users.models import EmployeeProfile
+                prof = EmployeeProfile.objects.filter(user_id=self.employee_id).first()
+                if prof:
+                    self.employee_profile_id = prof.id
+            except Exception:
+                pass
+        elif self.employee_profile_id and not self.employee_id:
+            try:
+                self.employee_id = self.employee_profile.user_id
+            except Exception:
+                pass
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.employee} Salary (From {self.effective_from}): Net {self.base_net_salary} {self.currency}"
@@ -381,6 +404,13 @@ class Payslip(BaseModel):
         on_delete=models.PROTECT,
         related_name='payslips'
     )
+    employee_profile = models.ForeignKey(
+        'users.EmployeeProfile',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='payslips'
+    )
     revision = models.PositiveIntegerField(default=1)
     payslip_number = models.CharField(max_length=64, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Issued', db_index=True)
@@ -410,6 +440,22 @@ class Payslip(BaseModel):
                 name='unique_org_payslip_number'
             )
         ]
+
+    def save(self, *args, **kwargs):
+        if self.employee_id and not self.employee_profile_id:
+            try:
+                from users.models import EmployeeProfile
+                prof = EmployeeProfile.objects.filter(user_id=self.employee_id).first()
+                if prof:
+                    self.employee_profile_id = prof.id
+            except Exception:
+                pass
+        elif self.employee_profile_id and not self.employee_id:
+            try:
+                self.employee_id = self.employee_profile.user_id
+            except Exception:
+                pass
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.payslip_number} - {self.employee} ({self.status})"

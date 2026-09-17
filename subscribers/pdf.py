@@ -165,6 +165,17 @@ def generate_invoice_pdf(invoice):
             Paragraph(_format_currency(proj_p), ParagraphStyle('R', parent=normal_style, alignment=2)),
         ])
 
+    storage_charge = getattr(invoice, 'storage_charge_snapshot', None) or Decimal('0.00')
+    if storage_charge > 0:
+        usage_m = getattr(invoice, 'storage_usage_month_snapshot', None)
+        usage_m_str = usage_m.strftime('%B %Y') if usage_m else "Previous Month"
+        fin_days = getattr(invoice, 'storage_finalized_days_snapshot', 0)
+        table_rows.append([
+            Paragraph(f"Storage &amp; Media — {usage_m_str}", normal_style),
+            Paragraph(f"{fin_days} finalized daily usage snapshots", normal_style),
+            Paragraph(_format_currency(storage_charge), ParagraphStyle('R', parent=normal_style, alignment=2)),
+        ])
+
     subtotal = invoice.subtotal_snapshot or invoice.amount
     tax_pct = invoice.tax_percentage_snapshot or Decimal('0.00')
     tax_amt = invoice.tax_amount_snapshot or Decimal('0.00')

@@ -915,6 +915,18 @@
         </span>
         <span>Modules</span>
       </div>
+      <div class="nav-link" id="nav-pricing" onclick="switchTab('pricing')">
+        <span class="nav-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
+        </span>
+        <span>Platform Rates</span>
+      </div>
+      <div class="nav-link" id="nav-storage" onclick="switchTab('storage')">
+        <span class="nav-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+        </span>
+        <span>Storage</span>
+      </div>
       <div class="nav-link" id="nav-subscribers" onclick="switchTab('subscribers')">
         <span class="nav-icon">
           <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
@@ -1012,60 +1024,6 @@
     <!-- TAB 1: Module Management -->
     <section id="tab-packages" class="tab-content active">
       <div class="panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Configure Module Pricing</h2>
-        </div>
-        <form id="package-form" onsubmit="createPackage(event)">
-          <div class="form-grid">
-            <div class="form-group">
-              <label>Select Module to Configure *</label>
-              <select id="pkg-feature" required>
-                <option value="attendance">Attendance Management</option>
-                <option value="project">Project & Tasks Management</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Monthly Price (₹) *</label>
-              <input type="number" step="0.01" id="pkg-price" required placeholder="0.00">
-              <small style="color: var(--text-light); margin-top: 4px; display: block; font-size: 0.76rem;">Daily rate is calculated dynamically: Monthly Price ÷ Days in Month (28, 29, 30, or 31 days). Billed on the 1st of every month.</small>
-            </div>
-            <div class="form-group">
-              <label>YouTube Video URL (Optional)</label>
-              <input type="url" id="pkg-video-url" placeholder="https://www.youtube.com/watch?v=...">
-            </div>
-          </div>
-          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Publish Module Pricing</button>
-        </form>
-      </div>
-
-      <div class="panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Monthly Platform Rates Configuration</h2>
-        </div>
-        <form id="data-rent-form" onsubmit="saveDataRetentionRent(event)">
-          <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 300px)); gap: 16px;">
-            <div class="form-group">
-              <label>Employee Seat Price (₹ / employee / mo) *</label>
-              <input type="number" step="0.01" id="m-seat-price" required placeholder="50.00">
-            </div>
-            <div class="form-group">
-              <label>Attendance Module Price (₹ / employee / mo) *</label>
-              <input type="number" step="0.01" id="m-att-price" required placeholder="99.00">
-            </div>
-            <div class="form-group">
-              <label>Project Module Price (₹ / employee / mo) *</label>
-              <input type="number" step="0.01" id="m-proj-price" required placeholder="56.00">
-            </div>
-            <div class="form-group">
-              <label>Monthly Data Retention Rent (₹) *</label>
-              <input type="number" step="0.01" id="m-rent-price" required placeholder="50.00">
-            </div>
-          </div>
-          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Platform Rates</button>
-        </form>
-      </div>
-
-      <div class="panel">
         <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center;">
           <h2 class="panel-title">Registered Modules</h2>
           <input type="text" placeholder="Search modules..." style="width: 200px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);" oninput="pkgSearchQuery = this.value; renderPackages()">
@@ -1088,6 +1046,167 @@
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: Platform Rates Configuration -->
+    <section id="tab-pricing" class="tab-content">
+      <!-- 1. EMPLOYEE SEAT RATE -->
+      <div class="panel">
+        <div class="panel-header" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+          <h2 class="panel-title">Employee Seat Rate</h2>
+          <p style="font-size: 0.85rem; color: var(--text-light); margin: 0;">Base recurring subscription fee per active employee seat.</p>
+        </div>
+        <form id="employee-seat-form" onsubmit="saveEmployeeSeatRate(event)">
+          <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 320px)); gap: 16px;">
+            <div class="form-group">
+              <label>Employee Seat Price (₹ / employee / month) *</label>
+              <input type="number" step="0.01" id="m-seat-price" required placeholder="50.00">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Employee Rate</button>
+        </form>
+      </div>
+
+      <!-- 2. MODULE RATES -->
+      <div class="panel">
+        <div class="panel-header" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+          <h2 class="panel-title">Module Rates</h2>
+          <p style="font-size: 0.85rem; color: var(--text-light); margin: 0;">Configure recurring monthly module add-on rates per employee.</p>
+        </div>
+        <form id="module-rate-form" onsubmit="saveModuleRate(event)">
+          <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 320px)); gap: 16px;">
+            <div class="form-group">
+              <label>Select Module *</label>
+              <select id="module-rate-select" required onchange="onModuleRateSelectChange()">
+                <option value="">Loading modules...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Monthly Price (₹/employee/month) *</label>
+              <input type="number" step="0.01" id="module-rate-price" required placeholder="0.00">
+            </div>
+            <div class="form-group">
+              <label>Status *</label>
+              <select id="module-rate-status" required>
+                <option value="true">Active</option>
+                <option value="false">Inactive</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>YouTube Video URL (Optional)</label>
+              <input type="url" id="module-rate-video-url" placeholder="https://www.youtube.com/watch?v=...">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Module Rate</button>
+        </form>
+
+        <div style="margin-top: 28px; border-top: 1px solid var(--border); padding-top: 20px;">
+          <h3 style="font-size: 1.05rem; font-weight: 700; color: var(--text-main); margin-bottom: 14px;">Configured Module Rates</h3>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Module</th>
+                  <th>Rate / Employee / Month</th>
+                  <th>Active Users</th>
+                  <th>Status</th>
+                  <th style="text-align: right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="configured-module-rates-body">
+                <tr>
+                  <td colspan="5" style="text-align: center; color: var(--text-light); padding: 16px;">Loading module rates...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. DATA RETENTION RENT -->
+      <div class="panel">
+        <div class="panel-header" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+          <h2 class="panel-title">Data Retention Rent</h2>
+          <p style="font-size: 0.85rem; color: var(--text-light); margin: 0;">Monthly maintenance fee charged to inactive or restricted workspaces to preserve data.</p>
+        </div>
+        <form id="data-rent-form" onsubmit="saveDataRetentionRent(event)">
+          <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 320px)); gap: 16px;">
+            <div class="form-group">
+              <label>Monthly Data Retention Rent (₹) *</label>
+              <input type="number" step="0.01" id="m-rent-price" required placeholder="50.00">
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Data Retention</button>
+        </form>
+      </div>
+
+      <!-- 4. STORAGE BILLING RATES -->
+      <div class="panel">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <h2 class="panel-title" style="margin: 0;">Storage Billing Rates</h2>
+          <div id="storage-status-badge-container">
+            <span class="badge" style="background: #f1f5f9; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; padding: 4px 10px;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+              Loading...
+            </span>
+          </div>
+        </div>
+        <form id="storage-settings-form" onsubmit="saveStorageSettings(event)">
+          <div class="form-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 320px)); gap: 16px;">
+            <div class="form-group">
+              <label>Storage Credit Size (GB) *</label>
+              <input type="number" step="any" min="0.0001" id="storage-credit-size-gb" required placeholder="1">
+              <small style="color: var(--text-light); font-size: 0.8rem; margin-top: 4px; display: block;">1 GB = 1,000,000,000 bytes (Commercial Decimal GB)</small>
+            </div>
+            <div class="form-group">
+              <label id="storage-price-label">Storage Price per Credit (<span id="storage-currency-symbol">₹</span>) *</label>
+              <input type="number" step="0.01" min="0" id="storage-credit-price" required placeholder="20.00">
+              <small style="color: var(--text-light); font-size: 0.8rem; margin-top: 4px; display: block;">Monthly charge per whole storage credit (>= 0.00)</small>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top: 16px;">Save Storage Settings</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- TAB: Global Storage & Tenant Usage Oversight -->
+    <section id="tab-storage" class="tab-content">
+      <div class="panel">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <h2 class="panel-title">Organization Storage Usage</h2>
+            <p style="font-size: 0.85rem; color: var(--text-light); margin-top: 2px;">Aggregated storage consumption and whole-credit metering across all tenant organizations</p>
+          </div>
+          <input type="text" id="storage-search-input" placeholder="Search organizations..." style="width: 240px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-md);" oninput="filterStorageOrganizations(this.value)">
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Organization</th>
+                <th>Storage Used</th>
+                <th>Credits</th>
+                <th>Active Files</th>
+                <th>Historical Files</th>
+                <th>Last Activity</th>
+              </tr>
+            </thead>
+            <tbody id="storage-orgs-table-body">
+              <tr>
+                <td colspan="6" style="text-align: center; color: var(--text-light); padding: 24px;">Loading storage usage data...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 0.85rem; color: var(--text-light);">
+          <span id="storage-pagination-info">Showing 0 of 0 organizations</span>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button class="btn btn-sm" id="storage-prev-btn" onclick="changeStoragePage(-1)" disabled style="padding: 4px 10px; background: #f1f5f9; border: 1px solid var(--border);">Previous</button>
+            <span id="storage-page-num" style="font-weight: 500; color: var(--text-main);">Page 1 of 1</span>
+            <button class="btn btn-sm" id="storage-next-btn" onclick="changeStoragePage(1)" disabled style="padding: 4px 10px; background: #f1f5f9; border: 1px solid var(--border);">Next</button>
+          </div>
         </div>
       </div>
     </section>
@@ -1869,6 +1988,8 @@
       // Update header title
       const titleMap = {
         packages: 'Module Management',
+        pricing: 'Platform Rates Configuration',
+        storage: 'Global Storage & Usage Oversight',
         subscribers: 'Subscriber Management',
         payments: 'Billing Ledger',
         leads: 'Prospect Leads Manager',
@@ -1894,6 +2015,8 @@
     // Routing switcher
     function loadData(tabId) {
       if (tabId === 'packages') fetchPackages();
+      if (tabId === 'pricing') { fetchGlobalPlatformRates(); fetchGlobalStorageSettings(); }
+      if (tabId === 'storage') fetchStorageOrganizations(1);
       if (tabId === 'subscribers') fetchSubscribers();
       if (tabId === 'payments') fetchPayments();
       if (tabId === 'leads') fetchLeads();
@@ -1976,7 +2099,7 @@
           <td style="font-weight: 600; color: var(--text-main);">${escapeHtml(pkg.name)}${videoLink}</td>
           <td style="color: var(--primary); font-weight: 600;">
             ₹${parseFloat(pkg.effectivePrice != null ? pkg.effectivePrice : pkg.price).toFixed(2)} / employee / mo
-            <div style="font-size:0.74rem; color:var(--text-light); font-weight:400;">₹${calcDailyRate}/day (${daysInCurMonth} days this mo)</div>
+            <div style="font-size:0.74rem; color:var(--text-light); font-weight:400;">Managed in Platform Rates · ₹${calcDailyRate}/day</div>
           </td>
           <td>${moduleBadges || '<span style="color:var(--text-light); font-size:0.8rem;">—</span>'}</td>
           <td>${userBadge}</td>
@@ -2000,9 +2123,9 @@
                 <label style="font-size:0.8rem; font-weight:600; color:var(--text-muted);">Module Name</label>
                 <input id="edit-name-${pkg.id}" type="text" value="${escapeHtml(pkg.name)}" style="padding:8px 12px; border:1px solid var(--border); border-radius:6px; font-size:0.9rem;">
               </div>
-              <div style="display:flex; flex-direction:column; gap:5px; flex: 1; min-width: 120px;">
-                <label style="font-size:0.8rem; font-weight:600; color:var(--text-muted);">Price (₹)</label>
-                <input id="edit-price-${pkg.id}" type="number" step="0.01" value="${pkg.price}" style="padding:8px 12px; border:1px solid var(--border); border-radius:6px; font-size:0.9rem;">
+              <div style="display:flex; flex-direction:column; gap:5px; flex: 1; min-width: 160px;">
+                <label style="font-size:0.8rem; font-weight:600; color:var(--text-muted);">Price (₹) <span style="font-weight:400; font-size:0.74rem; color:var(--text-light);">(Managed in Platform Rates)</span></label>
+                <input type="text" value="₹${parseFloat(pkg.effectivePrice != null ? pkg.effectivePrice : pkg.price).toFixed(2)} / employee / mo" readonly disabled style="padding:8px 12px; border:1px solid var(--border); border-radius:6px; font-size:0.9rem; background:#f1f5f9; cursor:not-allowed; color:var(--text-muted);">
               </div>
               <div style="display:flex; flex-direction:column; gap:5px; flex: 2; min-width: 240px;">
                 <label style="font-size:0.8rem; font-weight:600; color:var(--text-muted);">YouTube Video URL</label>
@@ -2025,19 +2148,9 @@
         const permConfig = await apiFetch('/api/permissions/config/');
         registeredModules = permConfig.modules || [];
         
-        const pkgFeatureSelect = document.getElementById('pkg-feature');
-        if (pkgFeatureSelect) {
-          pkgFeatureSelect.innerHTML = '';
-          registeredModules.forEach(mod => {
-            const opt = document.createElement('option');
-            opt.value = mod.id;
-            opt.textContent = mod.metadata.name;
-            pkgFeatureSelect.appendChild(opt);
-          });
-        }
-        
         const rawPackages = await apiFetch('/api/packages/');
         const data = normalizeArrayResponse(rawPackages);
+        window.allPackagesList = data;
         const rawSubscribers = await apiFetch('/api/subscribers/');
         window.allSubscribersList = normalizeArrayResponse(rawSubscribers);
 
@@ -2104,7 +2217,6 @@
           });
         }
 
-        fetchGlobalDataRent();
         renderPackages();
       } catch (err) {
         body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444;">Failed to read modules: ${err.message}</td></tr>`;
@@ -2134,37 +2246,17 @@
 
     async function updatePackage(id) {
       const name = document.getElementById(`edit-name-${id}`).value.trim();
-      const price = parseFloat(document.getElementById(`edit-price-${id}`).value);
       const video_url = document.getElementById(`edit-video-url-${id}`).value.trim() || null;
       
       const pkg = packageItems.find(p => p.id === id);
       const features = pkg ? pkg.features : [];
 
       if (!name) { showNotification('Module name cannot be empty.', 'error'); return; }
-      if (isNaN(price) || price < 0) { showNotification('Enter a valid price.', 'error'); return; }
 
       try {
-        await apiFetch(`/api/packages/${id}/`, 'PATCH', { name, price, video_url, features });
+        await apiFetch(`/api/packages/${id}/`, 'PATCH', { name, video_url, features });
         showNotification('Module updated successfully.');
         closeEditRow(id);
-        fetchPackages();
-      } catch (err) {
-        showNotification(err.message, 'error');
-      }
-    }
-
-    async function createPackage(e) {
-      e.preventDefault();
-      const featureSelect = document.getElementById('pkg-feature');
-      const name = featureSelect.options[featureSelect.selectedIndex].text;
-      const price = parseFloat(document.getElementById('pkg-price').value);
-      const video_url = document.getElementById('pkg-video-url').value.trim() || null;
-      const features = [featureSelect.value];
-
-      try {
-        await apiFetch('/api/packages/', 'POST', { name, price, video_url, employeeLimit: 99999, features });
-        showNotification('Module pricing successfully configured.');
-        document.getElementById('package-form').reset();
         fetchPackages();
       } catch (err) {
         showNotification(err.message, 'error');
@@ -3646,44 +3738,519 @@
         fetchEmailLogs();
       }
     }
-    async function fetchGlobalDataRent() {
+
+    function getModulePackage(modId) {
+      const pkgList = window.allPackagesList || packageItems || [];
+      if (!pkgList || pkgList.length === 0) return null;
+      const mId = (modId || '').toLowerCase();
+      return pkgList.find(p => {
+        const feats = Array.isArray(p.features) ? p.features.map(f => String(f).toLowerCase()) : [];
+        if (mId.includes('attendance') && (feats.includes('attendance') || (p.name || '').toLowerCase().includes('attendance'))) return true;
+        if ((mId.includes('project') || mId.includes('task')) && (feats.includes('project') || feats.includes('project_management') || feats.includes('tasks') || (p.name || '').toLowerCase().includes('project') || (p.name || '').toLowerCase().includes('task'))) return true;
+        const name = (p.name || '').toLowerCase();
+        if (feats.includes(mId) || name === mId) return true;
+        return false;
+      }) || null;
+    }
+
+    function getModulePackageVideoUrl(modId) {
+      const pkg = getModulePackage(modId);
+      return pkg && pkg.video_url ? pkg.video_url : '';
+    }
+
+    async function fetchGlobalPlatformRates() {
       try {
         const data = await apiFetch('/api/backoffice/billing-settings/');
+        window.currentBillingSettings = data;
+
         const seatInput = document.getElementById('m-seat-price');
-        const attInput = document.getElementById('m-att-price');
-        const projInput = document.getElementById('m-proj-price');
         const rentInput = document.getElementById('m-rent-price');
         if (seatInput) seatInput.value = data.employee_seat_price || '50.00';
-        if (attInput) attInput.value = data.attendance_module_price || '99.00';
-        if (projInput) projInput.value = data.tasks_module_price || '56.00';
         if (rentInput) rentInput.value = data.monthly_data_rent || '50.00';
+
+        // Ensure canonical modules from registry are loaded
+        if (!registeredModules || registeredModules.length === 0) {
+          try {
+            const permConfig = await apiFetch('/api/permissions/config/');
+            registeredModules = permConfig.modules || [];
+          } catch (e) {
+            console.warn('Could not fetch permissions config:', e);
+          }
+        }
+
+        // Ensure packages are loaded to retrieve module status and video_url
+        if (!window.allPackagesList || window.allPackagesList.length === 0) {
+          try {
+            const rawPackages = await apiFetch('/api/packages/');
+            window.allPackagesList = normalizeArrayResponse(rawPackages);
+          } catch (e) {
+            console.warn('Could not fetch packages for platform rates:', e);
+          }
+        }
+
+        // Ensure subscribers are loaded to calculate active user counts
+        if (!window.allSubscribersList || window.allSubscribersList.length === 0) {
+          try {
+            const rawSubscribers = await apiFetch('/api/subscribers/');
+            window.allSubscribersList = normalizeArrayResponse(rawSubscribers);
+          } catch (e) {
+            console.warn('Could not fetch subscribers for platform rates:', e);
+          }
+        }
+
+        const activeModules = (registeredModules && registeredModules.length > 0)
+          ? registeredModules.filter(m => m.enabled !== false)
+          : [];
+
+        // Populate Module dropdown
+        const selectEl = document.getElementById('module-rate-select');
+        if (selectEl && activeModules.length > 0) {
+          const currentVal = selectEl.value;
+          selectEl.innerHTML = '';
+          activeModules.forEach(mod => {
+            const opt = document.createElement('option');
+            opt.value = mod.id;
+            opt.textContent = (mod.metadata && mod.metadata.name) ? mod.metadata.name : mod.id;
+            selectEl.appendChild(opt);
+          });
+          if (currentVal && Array.from(selectEl.options).some(o => o.value === currentVal)) {
+            selectEl.value = currentVal;
+          }
+        }
+
+        onModuleRateSelectChange();
+        renderConfiguredModuleRates();
       } catch (err) {
         console.error('Failed to fetch platform rates:', err);
+      }
+    }
+    window.fetchGlobalDataRent = fetchGlobalPlatformRates;
+
+    function onModuleRateSelectChange() {
+      const selectEl = document.getElementById('module-rate-select');
+      const priceInput = document.getElementById('module-rate-price');
+      const videoInput = document.getElementById('module-rate-video-url');
+      const statusSelect = document.getElementById('module-rate-status');
+      if (!selectEl) return;
+      const modId = selectEl.value || '';
+      const val = modId.toLowerCase();
+      const gSettings = window.currentBillingSettings || {};
+      if (priceInput) {
+        if (val.includes('attendance')) {
+          priceInput.value = (gSettings.attendance_module_price != null) ? parseFloat(gSettings.attendance_module_price).toFixed(2) : '99.00';
+        } else if (val.includes('project') || val.includes('task')) {
+          priceInput.value = (gSettings.tasks_module_price != null) ? parseFloat(gSettings.tasks_module_price).toFixed(2) : '56.00';
+        } else {
+          priceInput.value = '0.00';
+        }
+      }
+      const pkg = getModulePackage(modId);
+      if (videoInput) {
+        videoInput.value = pkg && pkg.video_url ? pkg.video_url : '';
+      }
+      if (statusSelect) {
+        statusSelect.value = (pkg && pkg.isActive === false) ? 'false' : 'true';
+      }
+    }
+
+    function renderConfiguredModuleRates() {
+      const tbody = document.getElementById('configured-module-rates-body');
+      if (!tbody) return;
+      const gSettings = window.currentBillingSettings || {};
+
+      const activeModules = (registeredModules && registeredModules.length > 0)
+        ? registeredModules.filter(m => m.enabled !== false)
+        : [
+            { id: 'attendance', metadata: { name: 'Attendance Management' } },
+            { id: 'project_management', metadata: { name: 'Project Management' } }
+          ];
+
+      tbody.innerHTML = activeModules.map(mod => {
+        let rate = '0.00';
+        const modLower = mod.id.toLowerCase();
+        if (modLower.includes('attendance')) {
+          rate = gSettings.attendance_module_price != null ? parseFloat(gSettings.attendance_module_price).toFixed(2) : '99.00';
+        } else if (modLower.includes('project') || modLower.includes('task')) {
+          rate = gSettings.tasks_module_price != null ? parseFloat(gSettings.tasks_module_price).toFixed(2) : '56.00';
+        }
+
+        const pkg = getModulePackage(mod.id);
+        const videoUrl = pkg && pkg.video_url ? pkg.video_url : '';
+        const videoLink = videoUrl
+          ? `<a href="${escapeHtml(videoUrl)}" target="_blank" title="Watch Demo Video" style="color: var(--primary); text-decoration: none; margin-left: 6px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline; vertical-align:middle;"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg></a>`
+          : '';
+
+        const displayName = (mod.metadata && mod.metadata.name) ? mod.metadata.name : mod.id;
+
+        const isPkgActive = pkg ? (pkg.isActive !== false) : true;
+        const statusBadge = isPkgActive
+          ? '<span class="badge badge-success">Active</span>'
+          : '<span class="badge" style="background:#fee2e2; color:#ef4444; border:1px solid #fee2e2;">Inactive</span>';
+
+        const activeUsersCount = pkg
+          ? (pkg.activeUsersCount !== undefined ? pkg.activeUsersCount : (typeof getActiveUserCountForPackage === 'function' ? getActiveUserCountForPackage(pkg.name) : 0))
+          : 0;
+
+        const userBadge = `<span class="badge" style="background: #e0f2fe; color: #0369a1; font-weight: 600; padding: 4px 8px; display: inline-flex; align-items: center; gap: 4px;">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-top:-1px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+          ${activeUsersCount}
+        </span>`;
+
+        const toggleButton = (pkg && pkg.id)
+          ? (isPkgActive
+              ? `<button class="btn btn-sm" type="button" onclick="toggleModuleRateStatus(${pkg.id}, false)" style="background:#fee2e2; color:#ef4444; border:1px solid #fee2e2; padding: 4px 10px; cursor: pointer;">Deactivate</button>`
+              : `<button class="btn btn-success btn-sm" type="button" onclick="toggleModuleRateStatus(${pkg.id}, true)" style="padding: 4px 10px; cursor: pointer;">Activate</button>`)
+          : '';
+
+        return `
+          <tr>
+            <td style="font-weight: 600; color: var(--text-main);">${escapeHtml(displayName)}${videoLink}</td>
+            <td style="font-weight: 600; color: var(--primary);">₹${rate} / employee / month</td>
+            <td>${userBadge}</td>
+            <td>${statusBadge}</td>
+            <td style="text-align: right;">
+              <button class="btn btn-sm" type="button" onclick="editModuleRate('${escapeHtml(mod.id)}', '${rate}', '${escapeHtml(videoUrl)}', ${isPkgActive})" style="background:#f1f5f9; color:var(--text-main); border:1px solid var(--border); padding: 4px 12px; cursor: pointer; margin-right: 6px;">Edit</button>
+              ${toggleButton}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function toggleModuleRateStatus(pkgId, newActiveState) {
+      try {
+        await apiFetch(`/api/packages/${pkgId}/`, 'PATCH', { isActive: newActiveState });
+        showNotification(newActiveState ? 'Module successfully activated.' : 'Module successfully deactivated.');
+        if (window.allPackagesList) {
+          const p = window.allPackagesList.find(x => x.id === pkgId);
+          if (p) p.isActive = newActiveState;
+        }
+        if (packageItems) {
+          const p = packageItems.find(x => x.id === pkgId);
+          if (p) p.isActive = newActiveState;
+        }
+        fetchGlobalPlatformRates();
+        if (typeof fetchPackages === 'function') fetchPackages();
+      } catch (err) {
+        showNotification(err.message, 'error');
+      }
+    }
+
+    function editModuleRate(modId, rate, videoUrl, isPkgActive) {
+      const selectEl = document.getElementById('module-rate-select');
+      const priceInput = document.getElementById('module-rate-price');
+      const videoInput = document.getElementById('module-rate-video-url');
+      const statusSelect = document.getElementById('module-rate-status');
+      if (selectEl) {
+        selectEl.value = modId;
+      }
+      if (priceInput) {
+        priceInput.value = rate;
+        priceInput.focus();
+        priceInput.select();
+      }
+      if (statusSelect) {
+        statusSelect.value = (isPkgActive === false || isPkgActive === 'false') ? 'false' : 'true';
+      }
+      if (videoInput) {
+        videoInput.value = (videoUrl !== undefined && videoUrl !== null) ? videoUrl : getModulePackageVideoUrl(modId);
+      }
+    }
+
+    async function saveEmployeeSeatRate(e) {
+      e.preventDefault();
+      const seatVal = parseFloat(document.getElementById('m-seat-price').value);
+      if (isNaN(seatVal) || seatVal < 0) {
+        showNotification('Enter a valid positive employee seat rate.', 'error');
+        return;
+      }
+      try {
+        await apiFetch('/api/backoffice/billing-settings/', 'POST', {
+          employee_seat_price: seatVal
+        });
+        showNotification('Employee seat rate saved successfully!');
+        fetchGlobalPlatformRates();
+      } catch (err) {
+        showNotification('Failed to save employee seat rate: ' + err.message, 'error');
+      }
+    }
+
+    async function saveModuleRate(e) {
+      e.preventDefault();
+      const modId = document.getElementById('module-rate-select').value;
+      const priceVal = parseFloat(document.getElementById('module-rate-price').value);
+      const videoInput = document.getElementById('module-rate-video-url');
+      const videoUrlVal = videoInput ? videoInput.value.trim() : '';
+      const statusSelect = document.getElementById('module-rate-status');
+      const statusVal = statusSelect ? (statusSelect.value === 'true') : true;
+
+      if (!modId) {
+        showNotification('Please select a module.', 'error');
+        return;
+      }
+      if (isNaN(priceVal) || priceVal < 0) {
+        showNotification('Enter a valid positive module rate.', 'error');
+        return;
+      }
+
+      const payload = {};
+      const modLower = modId.toLowerCase();
+      if (modLower.includes('attendance')) {
+        payload.attendance_module_price = priceVal;
+      } else if (modLower.includes('project') || modLower.includes('task')) {
+        payload.tasks_module_price = priceVal;
+      } else {
+        showNotification('Unrecognized module mapping.', 'error');
+        return;
+      }
+
+      try {
+        // 1. Save billing rate to GlobalBillingSettings
+        await apiFetch('/api/backoffice/billing-settings/', 'POST', payload);
+
+        // 2. Sync YouTube Video URL and Status to matching SubscriptionPackage(s)
+        const pkgList = window.allPackagesList || packageItems || [];
+        if (pkgList && pkgList.length > 0) {
+          const matchingPackages = pkgList.filter(p => {
+            const feats = Array.isArray(p.features) ? p.features.map(f => String(f).toLowerCase()) : [];
+            if (modLower.includes('attendance') && (feats.includes('attendance') || (p.name || '').toLowerCase().includes('attendance'))) return true;
+            if ((modLower.includes('project') || modLower.includes('task')) && (feats.includes('project') || feats.includes('project_management') || feats.includes('tasks') || (p.name || '').toLowerCase().includes('project'))) return true;
+            return false;
+          });
+
+          for (const pkg of matchingPackages) {
+            try {
+              await apiFetch(`/api/packages/${pkg.id}/`, 'PATCH', {
+                video_url: videoUrlVal || null,
+                isActive: statusVal
+              });
+              pkg.video_url = videoUrlVal || null;
+              pkg.isActive = statusVal;
+            } catch (pErr) {
+              console.warn(`Failed to update package ${pkg.id}:`, pErr);
+            }
+          }
+        }
+
+        showNotification('Module rate and settings saved successfully!');
+        fetchGlobalPlatformRates();
+        fetchPackages();
+      } catch (err) {
+        showNotification('Failed to save module rate: ' + err.message, 'error');
       }
     }
 
     async function saveDataRetentionRent(e) {
       e.preventDefault();
-      const seatVal = parseFloat(document.getElementById('m-seat-price').value);
-      const attVal = parseFloat(document.getElementById('m-att-price').value);
-      const projVal = parseFloat(document.getElementById('m-proj-price').value);
       const rentVal = parseFloat(document.getElementById('m-rent-price').value);
-      if (isNaN(seatVal) || seatVal < 0 || isNaN(attVal) || attVal < 0 || isNaN(projVal) || projVal < 0 || isNaN(rentVal) || rentVal < 0) {
-        showNotification('Enter valid positive rates.', 'error');
+      if (isNaN(rentVal) || rentVal < 0) {
+        showNotification('Enter a valid positive data retention rate.', 'error');
         return;
       }
       try {
         await apiFetch('/api/backoffice/billing-settings/', 'POST', {
-          employee_seat_price: seatVal,
-          attendance_module_price: attVal,
-          tasks_module_price: projVal,
           monthly_data_rent: rentVal
         });
-        showNotification('Platform rates saved successfully!');
-        fetchGlobalDataRent();
+        showNotification('Data retention rent saved successfully!');
+        fetchGlobalPlatformRates();
       } catch (err) {
-        showNotification('Failed to save rates: ' + err.message, 'error');
+        showNotification('Failed to save data retention rent: ' + err.message, 'error');
       }
+    }
+
+    // --------------------------------------------------------------------------------
+    // Storage Oversight & Global Settings Logic
+    // --------------------------------------------------------------------------------
+    let storageOrgItems = [];
+    let storageOrgTotalCount = 0;
+    let storageOrgCurrentPage = 1;
+    const storageOrgPageSize = 50;
+    let storageSearchQuery = '';
+    let isFetchingStorageOrgs = false;
+
+    function formatStorageBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const b = Number(bytes);
+      if (b >= 1000000000) {
+        const gb = (b / 1000000000).toFixed(2);
+        return `${gb} GB`;
+      } else if (b >= 1000000) {
+        const mb = (b / 1000000).toFixed(2);
+        const gb = (b / 1000000000).toFixed(4);
+        return `${mb} MB <span style="color: var(--text-light); font-size: 0.8rem;">(${gb} GB)</span>`;
+      } else if (b >= 1000) {
+        const kb = (b / 1000).toFixed(2);
+        return `${kb} KB`;
+      }
+      return `${b} B`;
+    }
+
+    async function fetchGlobalStorageSettings() {
+      try {
+        const data = await apiFetch('/api/backoffice/billing-settings/');
+        const sizeInput = document.getElementById('storage-credit-size-gb');
+        const priceInput = document.getElementById('storage-credit-price');
+        const currencySymbol = document.getElementById('storage-currency-symbol');
+
+        if (sizeInput) {
+          const bytes = Number(data.storage_credit_size_bytes || 1000000000);
+          sizeInput.value = (bytes / 1000000000);
+        }
+        if (priceInput) {
+          priceInput.value = data.storage_credit_monthly_price || '20.00';
+        }
+        if (currencySymbol && data.currency) {
+          currencySymbol.textContent = (data.currency === 'INR') ? '₹' : data.currency;
+        }
+
+        // Dynamic Storage Billing Status
+        const statusContainer = document.getElementById('storage-status-badge-container');
+        if (statusContainer) {
+          const isEnabled = Boolean(data.storage_billing_enabled);
+          if (isEnabled) {
+            statusContainer.innerHTML = `
+              <span class="badge badge-success" style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; padding: 4px 10px;">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                Active
+              </span>
+            `;
+          } else {
+            statusContainer.innerHTML = `
+              <span class="badge badge-warning" style="display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; padding: 4px 10px;">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="10" y1="15" x2="10" y2="9"></line><line x1="14" y1="15" x2="14" y2="9"></line></svg>
+                Disabled
+              </span>
+            `;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch storage settings:', err);
+      }
+    }
+
+    async function saveStorageSettings(e) {
+      e.preventDefault();
+      const sizeGb = parseFloat(document.getElementById('storage-credit-size-gb').value);
+      const price = parseFloat(document.getElementById('storage-credit-price').value);
+
+      if (isNaN(sizeGb) || sizeGb <= 0) {
+        showNotification('Storage credit size must be greater than 0 GB.', 'error');
+        return;
+      }
+      if (isNaN(price) || price < 0) {
+        showNotification('Storage credit monthly price must be greater than or equal to 0.00.', 'error');
+        return;
+      }
+
+      const sizeBytes = Math.round(sizeGb * 1000000000);
+      try {
+        await apiFetch('/api/backoffice/billing-settings/', 'POST', {
+          storage_credit_size_bytes: sizeBytes,
+          storage_credit_monthly_price: price
+        });
+        showNotification('Storage configuration saved successfully!');
+        fetchGlobalStorageSettings();
+        fetchStorageOrganizations(storageOrgCurrentPage);
+      } catch (err) {
+        showNotification('Failed to save storage settings: ' + err.message, 'error');
+      }
+    }
+
+    let storageSearchDebounceTimer = null;
+
+    async function fetchStorageOrganizations(page = 1) {
+      if (isFetchingStorageOrgs) return;
+      isFetchingStorageOrgs = true;
+      const body = document.getElementById('storage-orgs-table-body');
+      storageOrgCurrentPage = page;
+      try {
+        let url = `/api/backoffice/storage/organizations/?page=${page}&page_size=${storageOrgPageSize}`;
+        if (storageSearchQuery) {
+          url += `&search=${encodeURIComponent(storageSearchQuery)}`;
+        }
+        const data = await apiFetch(url);
+        if (data && data.results) {
+          storageOrgItems = data.results;
+          storageOrgTotalCount = data.count;
+        } else if (Array.isArray(data)) {
+          storageOrgItems = data;
+          storageOrgTotalCount = data.length;
+        } else {
+          storageOrgItems = [];
+          storageOrgTotalCount = 0;
+        }
+        renderStorageOrganizations();
+        updateStoragePaginationUI();
+      } catch (err) {
+        console.error('Failed to fetch storage organizations:', err);
+        if (body) {
+          body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #ef4444; padding: 24px;">Failed to read storage organizations: ${escapeHtml(err.message)}</td></tr>`;
+        }
+      } finally {
+        isFetchingStorageOrgs = false;
+      }
+    }
+
+    function renderStorageOrganizations() {
+      const body = document.getElementById('storage-orgs-table-body');
+      if (!body) return;
+      let items = storageOrgItems;
+      if (!items || items.length === 0) {
+        body.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-light); padding: 24px;">No organizations found matching criteria.</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map(org => {
+        const lastActivity = org.last_storage_activity_at
+          ? new Date(org.last_storage_activity_at).toLocaleString()
+          : '<span style="color: var(--text-light);">No activity</span>';
+        const storageDisplay = formatStorageBytes(org.active_bytes);
+        return `
+          <tr>
+            <td>
+              <div style="font-weight: 600; color: var(--text-main);">${escapeHtml(org.organization_name || '')}</div>
+              <div style="font-size: 0.8rem; color: var(--text-light);">${escapeHtml(org.subdomain || '')}</div>
+            </td>
+            <td>${storageDisplay}</td>
+            <td><span style="font-weight: 600; color: #2563eb;">${org.current_credits}</span></td>
+            <td>${org.active_files}</td>
+            <td>${org.deleted_files}</td>
+            <td><span style="font-size: 0.85rem; color: var(--text-muted);">${lastActivity}</span></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function updateStoragePaginationUI() {
+      const infoEl = document.getElementById('storage-pagination-info');
+      const pageNumEl = document.getElementById('storage-page-num');
+      const prevBtn = document.getElementById('storage-prev-btn');
+      const nextBtn = document.getElementById('storage-next-btn');
+
+      const totalPages = Math.ceil(storageOrgTotalCount / storageOrgPageSize) || 1;
+      const startCount = storageOrgTotalCount === 0 ? 0 : (storageOrgCurrentPage - 1) * storageOrgPageSize + 1;
+      const endCount = Math.min(storageOrgCurrentPage * storageOrgPageSize, storageOrgTotalCount);
+
+      if (infoEl) infoEl.textContent = `Showing ${startCount}-${endCount} of ${storageOrgTotalCount.toLocaleString('en-IN')} organizations`;
+      if (pageNumEl) pageNumEl.textContent = `Page ${storageOrgCurrentPage} of ${totalPages}`;
+
+      if (prevBtn) prevBtn.disabled = (storageOrgCurrentPage <= 1);
+      if (nextBtn) nextBtn.disabled = (storageOrgCurrentPage >= totalPages);
+    }
+
+    function changeStoragePage(delta) {
+      const totalPages = Math.ceil(storageOrgTotalCount / storageOrgPageSize) || 1;
+      const newPage = storageOrgCurrentPage + delta;
+      if (newPage >= 1 && newPage <= totalPages) {
+        fetchStorageOrganizations(newPage);
+      }
+    }
+
+    function filterStorageOrganizations(val) {
+      storageSearchQuery = val ? val.trim() : '';
+      if (storageSearchDebounceTimer) clearTimeout(storageSearchDebounceTimer);
+      storageSearchDebounceTimer = setTimeout(() => {
+        fetchStorageOrganizations(1);
+      }, 300);
     }
 
     // Bootstrap data loading on page load
@@ -3697,7 +4264,7 @@
       
       // Parse backoffice tab permissions from view context
       let userPermissions = JSON.parse('{{ user_permissions_json|escapejs }}');
-      const allTabs = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'email_logs'];
+      const allTabs = ['packages', 'pricing', 'storage', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'email_logs'];
       const hasAnyBackofficePerm = allTabs.some(t => userPermissions.includes(t));
       if (!hasAnyBackofficePerm) {
         userPermissions = allTabs;
@@ -3706,7 +4273,9 @@
       allTabs.forEach(tab => {
         const navLink = document.getElementById(`nav-${tab}`);
         if (navLink) {
-          if (userPermissions.includes(tab)) {
+          const isAllowed = userPermissions.includes(tab) ||
+            ((tab === 'pricing' || tab === 'storage') && (userPermissions.includes('billing_settings') || userPermissions.includes('packages')));
+          if (isAllowed) {
             navLink.style.display = 'flex';
           } else {
             navLink.style.display = 'none';
@@ -3716,9 +4285,13 @@
       
       // Navigate to the tab from URL hash if present, else first authorized tab
       const hashTab = window.location.hash.replace('#', '');
-      const startTab = (hashTab && allTabs.includes(hashTab) && userPermissions.includes(hashTab))
+      const isHashAllowed = hashTab && allTabs.includes(hashTab) && (
+        userPermissions.includes(hashTab) ||
+        ((hashTab === 'pricing' || hashTab === 'storage') && (userPermissions.includes('billing_settings') || userPermissions.includes('packages')))
+      );
+      const startTab = isHashAllowed
         ? hashTab
-        : allTabs.find(tab => userPermissions.includes(tab));
+        : allTabs.find(tab => userPermissions.includes(tab) || ((tab === 'pricing' || tab === 'storage') && (userPermissions.includes('billing_settings') || userPermissions.includes('packages'))));
       if (startTab) {
         switchTab(startTab);
       } else {

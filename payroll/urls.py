@@ -28,6 +28,7 @@ from payroll.views import (
     RecordSalaryPaymentView,
     BulkRecordSalaryPaymentView,
     VoidSalaryPaymentView,
+    PayrollTaskStatusView,
 )
 
 router = DefaultRouter()
@@ -35,6 +36,7 @@ router.register(r'payroll/components', SalaryComponentViewSet, basename='salary-
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('payroll/tasks/<str:task_id>/', PayrollTaskStatusView.as_view(), name='payroll-task-status'),
     path('payroll/employees/salaries/', EmployeeSalaryListView.as_view(), name='employee-salary-list'),
     path('payroll/employees/<int:employee_id>/salary/', EmployeeSalaryDetailView.as_view(), name='employee-salary-detail'),
     path('payroll/employees/<int:employee_id>/salary/resolve/', EmployeeSalaryResolveView.as_view(), name='employee-salary-resolve'),
@@ -54,8 +56,10 @@ urlpatterns = [
     path('payroll/periods/<int:year>/<int:month>/payslips/', PeriodPayslipListView.as_view(), name='payroll-period-payslips'),
     path('payroll/payslips/<int:payslip_id>/', PayslipDetailView.as_view(), name='payroll-payslip-detail'),
     path('payroll/payslips/<int:payslip_id>/pdf/', PayslipPDFView.as_view(), name='payroll-payslip-pdf'),
+    path('payroll/payslips/<int:payslip_id>/pdf', PayslipPDFView.as_view(), name='payroll-payslip-pdf-noslash'),
     path('payroll/my-payslips/', MyPayslipListView.as_view(), name='payroll-my-payslips'),
     path('payroll/my-payslips/<int:payslip_id>/', MyPayslipDetailView.as_view(), name='payroll-my-payslip-detail'),
     path('payroll/my-payslips/<int:payslip_id>/pdf/', MyPayslipPDFView.as_view(), name='payroll-my-payslip-pdf'),
+    path('payroll/my-payslips/<int:payslip_id>/pdf', MyPayslipPDFView.as_view(), name='payroll-my-payslip-pdf-noslash'),
 ]
 

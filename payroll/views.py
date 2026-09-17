@@ -65,6 +65,32 @@ class BasePayrollAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated, DRFPlanPermissionRequired]
     required_plan_feature = 'is_attendance_enabled'
 
+    def get_organization(self, request):
+        """
+        Resolves active organization and validates active membership.
+        Phase 2B multi-tenant canonical resolution.
+        """
+        active_org = getattr(request, 'active_organization', None)
+        if not active_org:
+            raise PermissionDenied("No active organization associated with your account.")
+        user = request.user
+        if not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
+            from users.models import OrganizationMembership
+            has_membership = OrganizationMembership.objects.filter(
+                user=user,
+                organization=active_org,
+                is_active_in_org=True,
+                is_deleted=False
+            ).exists()
+            user_has_any_mems = OrganizationMembership.objects.filter(user=user).exists()
+            if user_has_any_mems:
+                if not has_membership:
+                    raise PermissionDenied("You do not have an active membership in this organization.")
+            else:
+                if getattr(user, 'organization', None) != active_org:
+                    raise PermissionDenied("You do not have an active membership in this organization.")
+        return active_org
+
 
 class SalaryComponentViewSet(viewsets.ModelViewSet):
     """
@@ -74,9 +100,30 @@ class SalaryComponentViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, DRFPlanPermissionRequired]
     required_plan_feature = 'is_attendance_enabled'
 
-    def get_queryset(self):
+    def get_organization(self):
+        active_org = getattr(self.request, 'active_organization', None)
+        if not active_org:
+            return None
         user = self.request.user
-        active_org = getattr(self.request, 'active_organization', None) or (user.organization if user.is_authenticated else None)
+        if not (user.is_superuser or getattr(user, 'isSuperAdmin', False)):
+            from users.models import OrganizationMembership
+            has_membership = OrganizationMembership.objects.filter(
+                user=user,
+                organization=active_org,
+                is_active_in_org=True,
+                is_deleted=False
+            ).exists()
+            user_has_any_mems = OrganizationMembership.objects.filter(user=user).exists()
+            if user_has_any_mems:
+                if not has_membership:
+                    raise PermissionDenied("You do not have an active membership in this organization.")
+            else:
+                if getattr(user, 'organization', None) != active_org:
+                    raise PermissionDenied("You do not have an active membership in this organization.")
+        return active_org
+
+    def get_queryset(self):
+        active_org = self.get_organization()
         if not active_org:
             return SalaryComponent.objects.none()
         return SalaryComponent.objects.filter(
@@ -99,6 +146,12 @@ class SalaryComponentViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         self.check_permissions_custom(['salary:manage'])
         return super().create(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        active_org = self.get_organization()
+        if not active_org:
+            raise PermissionDenied("No active organization associated with your account.")
+        serializer.save(organization=active_org)
 
     def update(self, request, *args, **kwargs):
         self.check_permissions_custom(['salary:manage'])
@@ -123,10 +176,7 @@ class EmployeeSalaryDetailView(BasePayrollAPIView):
     """
 
     def get_employee(self, employee_id):
-        user = self.request.user
-        active_org = getattr(self.request, 'active_organization', None)
-        if not active_org:
-            raise PermissionDenied("No active organization associated with your account.")
+        active_org = self.get_organization(self.request)
 
         from django.db.models import Q
         employee = Employee.objects.filter(
@@ -141,15 +191,15 @@ class EmployeeSalaryDetailView(BasePayrollAPIView):
         return employee
 
     def get(self, request, employee_id):
+        active_org = self.get_organization(request)
         employee = self.get_employee(employee_id)
-        active_org = getattr(request, 'active_organization', None)
         
         is_self = (request.user.id == employee.id)
         if not is_self and not has_fine_grained_permission(request.user, ['salary:view', 'salary:manage']):
             raise PermissionDenied("You do not have permission to view salary structures.")
 
         today = timezone.now().date()
-        active_structure = get_employee_salary_structure(employee, today)
+        active_structure = get_employee_salary_structure(employee, active_org, today)
 
         history = EmployeeSalaryStructure.objects.filter(
             employee=employee,
@@ -169,6 +219,7 @@ class EmployeeSalaryDetailView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['salary:manage']):
             raise PermissionDenied("You do not have permission to assign or revise salary structures.")
 
+        active_org = self.get_organization(request)
         employee = self.get_employee(employee_id)
 
         serializer = SalaryStructureCreateSerializer(data=request.data)
@@ -177,7 +228,7 @@ class EmployeeSalaryDetailView(BasePayrollAPIView):
         data = serializer.validated_data
         structure = assign_or_revise_salary_structure(
             employee=employee,
-            organization=request.user.organization,
+            organization=active_org,
             effective_from=data['effective_from'],
             components_data=data.get('components', []),
             notes=data.get('notes'),
@@ -202,20 +253,21 @@ class EmployeeSalaryResolveView(BasePayrollAPIView):
     """
 
     def get(self, request, employee_id):
-        user = request.user
-        if not user.organization:
-            raise PermissionDenied("No active organization associated with your account.")
+        active_org = self.get_organization(request)
 
+        from django.db.models import Q
         employee = Employee.objects.filter(
-            id=employee_id,
-            organization=user.organization
-        ).first()
+            Q(id=employee_id) & (
+                Q(organization=active_org) |
+                Q(memberships__organization=active_org, memberships__is_active_in_org=True, memberships__is_deleted=False)
+            )
+        ).distinct().first()
 
         if not employee:
             raise NotFound(f"Employee with ID {employee_id} was not found in your organization.")
 
-        is_self = (user.id == employee.id)
-        if not is_self and not has_fine_grained_permission(user, ['salary:view', 'salary:manage']):
+        is_self = (request.user.id == employee.id)
+        if not is_self and not has_fine_grained_permission(request.user, ['salary:view', 'salary:manage']):
             raise PermissionDenied("You do not have permission to resolve salary structures.")
 
         date_str = request.query_params.get('date')
@@ -227,7 +279,7 @@ class EmployeeSalaryResolveView(BasePayrollAPIView):
         else:
             target_date = timezone.now().date()
 
-        structure = get_employee_salary_structure(employee, target_date)
+        structure = get_employee_salary_structure(employee, active_org, target_date)
         return Response({
             "target_date": target_date.isoformat(),
             "structure": EmployeeSalaryStructureSerializer(structure).data if structure else None
@@ -246,17 +298,19 @@ class EmployeeSalaryListView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['salary:view', 'salary:manage']):
             raise PermissionDenied("You do not have permission to view salary structures.")
 
-        org = request.user.organization
+        org = self.get_organization(request)
         if not org:
             return Response([])
 
         search_q = request.query_params.get('search', '').strip()
         today = timezone.now().date()
 
+        from django.db.models import Q
         queryset = Employee.objects.filter(
-            organization=org,
+            Q(organization=org) |
+            Q(memberships__organization=org, memberships__is_active_in_org=True, memberships__is_deleted=False),
             is_active=True,
-        ).order_by('first_name', 'last_name')
+        ).distinct().order_by('first_name', 'last_name')
 
         if search_q:
             queryset = queryset.filter(
@@ -309,7 +363,7 @@ class PayrollPeriodListView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to view payroll periods.")
 
-        org = request.user.organization
+        org = self.get_organization(request)
         if not org:
             return Response([])
 
@@ -326,9 +380,7 @@ class PayrollPeriodDetailView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to view payroll.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
         att_period = AttendancePeriod.objects.filter(organization=org, year=year, month=month, is_deleted=False).first()
@@ -385,9 +437,7 @@ class RecordSalaryPaymentView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to record salary payments.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         snapshot_id = request.data.get('snapshot_id')
         paid_at = request.data.get('paid_at')
@@ -416,9 +466,7 @@ class BulkRecordSalaryPaymentView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to record salary payments.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year = request.data.get('year')
         month = request.data.get('month')
@@ -454,9 +502,7 @@ class VoidSalaryPaymentView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:manage']):
             raise PermissionDenied("You do not have permission to void salary payments.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         void_reason = request.data.get('void_reason', '')
         payment = void_salary_payment(
@@ -471,17 +517,40 @@ class VoidSalaryPaymentView(BasePayrollAPIView):
 class PayrollPeriodCalculateView(BasePayrollAPIView):
     """
     Calculates / recalculates monthly payroll for an organization.
+    Supports asynchronous background execution via ?async=true or payload {"async": true}.
     """
 
     def post(self, request, year, month):
         if not has_fine_grained_permission(request.user, ['payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to calculate payroll.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
+        is_async = (
+            request.query_params.get('async', '').lower() in ['true', '1'] or
+            request.data.get('async') is True or
+            str(request.data.get('async', '')).lower() in ['true', '1']
+        )
+
+        if is_async:
+            from payroll.tasks import calculate_payroll_period_task, dispatch_task_safely
+            task = dispatch_task_safely(
+                calculate_payroll_period_task,
+                organization_id=org.id,
+                year=year,
+                month=month,
+                user_id=request.user.id
+            )
+            return Response(
+                {
+                    "task_id": str(task.id),
+                    "status": getattr(task, 'status', 'PENDING'),
+                    "message": f"Payroll calculation queued for {year}-{month:02d}."
+                },
+                status=status.HTTP_202_ACCEPTED
+            )
+
         period = calculate_payroll_period(organization=org, year=year, month=month, user=request.user)
         return Response(PayrollPeriodSerializer(period).data, status=status.HTTP_200_OK)
 
@@ -495,9 +564,7 @@ class PayrollPeriodFinalizeView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:manage']):
             raise PermissionDenied("You do not have permission to finalize payroll.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
         period = finalize_payroll_period(organization=org, year=year, month=month, user=request.user)
@@ -513,9 +580,7 @@ class PayrollPeriodReopenView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:manage']):
             raise PermissionDenied("You do not have permission to reopen payroll.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
         reason = request.data.get('reason', '')
@@ -533,7 +598,7 @@ class PayrollEmployeeSnapshotsView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to view employee payroll records.")
 
-        org = request.user.organization
+        org = self.get_organization(request)
         if not org:
             return Response([])
 
@@ -577,9 +642,7 @@ class PayrollEmployeeDetailSnapshotView(BasePayrollAPIView):
         if not is_self and not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to view this payroll record.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
         period = PayrollPeriod.objects.filter(organization=org, year=year, month=month, is_deleted=False).first()
@@ -617,9 +680,7 @@ class PayrollAdjustmentCreateView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to add adjustments.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
         period = PayrollPeriod.objects.filter(organization=org, year=year, month=month, is_deleted=False).first()
@@ -627,7 +688,13 @@ class PayrollAdjustmentCreateView(BasePayrollAPIView):
             raise ValidationError({"detail": "Adjustments can only be added to non-finalized payroll periods."})
 
         emp_id = request.data.get('employee') or request.data.get('employee_id')
-        employee = Employee.objects.filter(id=emp_id, organization=org).first()
+        from django.db.models import Q
+        employee = Employee.objects.filter(
+            Q(id=emp_id) & (
+                Q(organization=org) |
+                Q(memberships__organization=org, memberships__is_active_in_org=True, memberships__is_deleted=False)
+            )
+        ).distinct().first()
         if not employee:
             raise ValidationError({"employee": "Employee not found in your organization."})
 
@@ -668,9 +735,7 @@ class PayrollAdjustmentDeleteView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to delete adjustments.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         adj = PayrollAdjustment.objects.filter(id=adjustment_id, organization=org, is_deleted=False).first()
         if not adj:
@@ -695,6 +760,36 @@ class PayrollAdjustmentDeleteView(BasePayrollAPIView):
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    def patch(self, request, adjustment_id):
+        if not has_fine_grained_permission(request.user, ['payroll:process', 'payroll:manage']):
+            raise PermissionDenied("You do not have permission to update adjustments.")
+
+        org = self.get_organization(request)
+
+        adj = PayrollAdjustment.objects.filter(id=adjustment_id, organization=org, is_deleted=False).first()
+        if not adj:
+            raise NotFound("Adjustment not found.")
+
+        if adj.payroll_period.status == 'Finalized':
+            raise ValidationError({"detail": "Cannot update adjustments for a Finalized payroll period."})
+
+        serializer = PayrollAdjustmentSerializer(adj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        # AuditLog
+        user_name = f"{request.user.first_name} {request.user.last_name}".strip() or request.user.email
+        from core.models import AuditLog
+        AuditLog.objects.create(
+            organization=org,
+            employee=request.user,
+            employeeName=user_name,
+            action="Payroll Adjustment Updated",
+            details=f"Updated {adj.adjustment_type} ({adj.category}) adjustment to {adj.amount} for employee {adj.employee_id}."
+        )
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class PayslipDetailView(BasePayrollAPIView):
     """
@@ -706,9 +801,7 @@ class PayslipDetailView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to view payslips.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         payslip = Payslip.objects.filter(
             id=payslip_id,
@@ -733,15 +826,20 @@ class PayslipPDFView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to download payslips.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         payslip = Payslip.objects.filter(
             id=payslip_id,
             organization=org,
             is_deleted=False
         ).select_related('payroll_period', 'payroll_snapshot', 'employee').first()
+
+        if not payslip:
+            payslip = Payslip.objects.filter(
+                payroll_snapshot_id=payslip_id,
+                organization=org,
+                is_deleted=False
+            ).select_related('payroll_period', 'payroll_snapshot', 'employee').first()
 
         if not payslip:
             raise NotFound("Payslip not found.")
@@ -769,9 +867,7 @@ class PeriodPayslipListView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to view payroll payslips.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         payslips = Payslip.objects.filter(
             organization=org,
@@ -795,9 +891,7 @@ class PeriodPayslipBulkZipExportView(BasePayrollAPIView):
         if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:manage']):
             raise PermissionDenied("You do not have permission to export payroll payslips.")
 
-        org = request.user.organization
-        if not org:
-            raise PermissionDenied("No organization associated with user.")
+        org = self.get_organization(request)
 
         year, month = int(year), int(month)
         period = PayrollPeriod.objects.filter(
@@ -814,6 +908,29 @@ class PeriodPayslipBulkZipExportView(BasePayrollAPIView):
             return Response(
                 {"detail": "Bulk ZIP export is only available for Finalized payroll periods."},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+
+        is_async = (
+            request.query_params.get('async', '').lower() in ['true', '1'] or
+            request.query_params.get('background', '').lower() in ['true', '1']
+        )
+
+        if is_async:
+            from payroll.tasks import generate_bulk_payslip_zip_task, dispatch_task_safely
+            task = dispatch_task_safely(
+                generate_bulk_payslip_zip_task,
+                organization_id=org.id,
+                year=year,
+                month=month,
+                user_id=request.user.id
+            )
+            return Response(
+                {
+                    "task_id": str(task.id),
+                    "status": getattr(task, 'status', 'PENDING'),
+                    "message": f"Bulk payslip ZIP generation queued for {year}-{month:02d}."
+                },
+                status=status.HTTP_202_ACCEPTED
             )
 
         issued_payslips = Payslip.objects.filter(
@@ -886,9 +1003,7 @@ class MyPayslipListView(BasePayrollAPIView):
 
     def get(self, request):
         user = request.user
-        org = user.organization
-        if not org:
-            return Response([], status=status.HTTP_200_OK)
+        org = self.get_organization(request)
 
         payslips = Payslip.objects.filter(
             organization=org,
@@ -909,9 +1024,7 @@ class MyPayslipDetailView(BasePayrollAPIView):
 
     def get(self, request, payslip_id):
         user = request.user
-        org = user.organization
-        if not org:
-            raise NotFound("Payslip not found.")
+        org = self.get_organization(request)
 
         payslip = Payslip.objects.filter(
             id=payslip_id,
@@ -935,9 +1048,7 @@ class MyPayslipPDFView(BasePayrollAPIView):
 
     def get(self, request, payslip_id):
         user = request.user
-        org = user.organization
-        if not org:
-            raise NotFound("Payslip not found.")
+        org = self.get_organization(request)
 
         payslip = Payslip.objects.filter(
             id=payslip_id,
@@ -960,6 +1071,31 @@ class MyPayslipPDFView(BasePayrollAPIView):
         response['Cache-Control'] = 'no-store, private'
         response['X-Content-Type-Options'] = 'nosniff'
         return response
+
+
+class PayrollTaskStatusView(BasePayrollAPIView):
+    """
+    Retrieves the status and result of an asynchronous payroll Celery task.
+    """
+
+    def get(self, request, task_id):
+        if not has_fine_grained_permission(request.user, ['payroll:view', 'payroll:process', 'payroll:manage']):
+            raise PermissionDenied("You do not have permission to inspect payroll tasks.")
+
+        from celery.result import AsyncResult
+        res = AsyncResult(task_id)
+
+        response_data = {
+            "task_id": task_id,
+            "status": res.status,
+            "ready": res.ready(),
+            "successful": res.successful() if res.ready() else False,
+            "result": res.result if res.ready() and not isinstance(res.result, Exception) else None,
+        }
+        if res.failed():
+            response_data["error"] = str(res.result)
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 

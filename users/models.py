@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils.text import slugify
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 
 # THIRD PARTY
 
@@ -211,7 +212,6 @@ class Employee(AbstractUser):
     def clean(self):
         super().clean()
         if self.joining_date and self.last_working_date and self.last_working_date < self.joining_date:
-            from django.core.exceptions import ValidationError
             raise ValidationError({"last_working_date": "Last working date cannot be earlier than joining date."})
 
     def clear_permission_cache(self):
@@ -285,6 +285,112 @@ class Employee(AbstractUser):
         if isinstance(permission_key, (list, tuple)):
             return any(k in effective for k in permission_key)
         return permission_key in effective
+
+    @property
+    def active_profile(self):
+        """
+        Backward-compatible helper returning the attached EmployeeProfile.
+        Safely returns None if no EmployeeProfile exists yet for this user.
+        """
+        try:
+            return self.employee_profile
+        except ObjectDoesNotExist:
+            return None
+
+
+# --------------------------------------------------------------------------------
+# EmployeeProfile: Tenant-scoped employee HR profile decoupled from auth User
+# --------------------------------------------------------------------------------
+class EmployeeProfile(BaseModel):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='employee_profile'
+    )
+    organization = models.ForeignKey(
+        'core.Organization',
+        on_delete=models.CASCADE,
+        related_name='employee_profiles',
+        null=True,
+        blank=True
+    )
+    employee_code = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="HR / Payroll Employee ID"
+    )
+    designation = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="HR Job Title (e.g. Developer, QA, Designer)"
+    )
+    department = models.CharField(
+        max_length=100,
+        default='',
+        blank=True,
+        help_text="Department or team"
+    )
+    employment_status = models.CharField(
+        max_length=20,
+        choices=Employee.EMPLOYMENT_STATUS_CHOICES,
+        default='Active'
+    )
+    joining_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Official employment start date."
+    )
+    last_working_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Official employment termination/last working date."
+    )
+    phone = models.CharField(
+        max_length=20,
+        blank=True,
+        null=True
+    )
+    profile_photo = models.TextField(
+        blank=True,
+        null=True
+    )
+
+    class Meta:
+        db_table = 'api_employeeprofile'
+        ordering = ['-id']
+        indexes = [
+            models.Index(fields=['organization', 'employee_code'], name='empprof_org_code_idx'),
+            models.Index(fields=['organization', 'employment_status'], name='empprof_org_status_idx'),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.joining_date and self.last_working_date and self.last_working_date < self.joining_date:
+            raise ValidationError({"last_working_date": "Last working date cannot be earlier than joining date."})
+
+    def __str__(self):
+        return f"{self.full_name} ({self.employee_code or 'No Code'})"
+
+    # --- Reverse Property Shims ---
+    @property
+    def email(self):
+        return self.user.email if self.user else None
+
+    @property
+    def full_name(self):
+        if not self.user:
+            return ""
+        name = f"{self.user.first_name} {self.user.last_name}".strip()
+        return name or self.user.email
+
+    @property
+    def is_active(self):
+        if not self.user:
+            return False
+        return bool(self.user.is_active and (self.employment_status == 'Active'))
 
 
 # --------------------------------------------------------------------------------
@@ -386,14 +492,12 @@ class OrganizationMembership(BaseModel):
     def clean(self):
         super().clean()
         if self.joining_date and self.last_working_date and self.last_working_date < self.joining_date:
-            from django.core.exceptions import ValidationError
             raise ValidationError({"last_working_date": "Last working date cannot be earlier than joining date."})
 
         if self.role and self.organization:
             is_same_org = (self.role.organization_id == self.organization_id)
             is_valid_system = (self.role.organization_id is None and self.role.is_system_role)
             if not (is_same_org or is_valid_system):
-                from django.core.exceptions import ValidationError
                 raise ValidationError({"role": "Role does not belong to this organization."})
 
     def save(self, *args, **kwargs):

@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from subscribers.api.v1.views import (
     SubscriptionPackageViewSet, SubscriberAccountViewSet,
     DynamicCheckoutView, ConfirmSubscriptionView, VerifyPaymentView, BackofficeRegisterCompanyView,
-    BackofficeOrganizationListView, stripe_webhook, razorpay_webhook,
+    BackofficeOrganizationListView, BackofficeStorageOrganizationListView, stripe_webhook, razorpay_webhook,
     WalletViewSet, BackofficePaymentListView, CouponViewSet, BackofficeCouponViewSet,
     GlobalBillingSettingsViewSet, BackofficeEmailLogListView, BackofficeEmailLogResendView,
     LiveBillingEstimateView, MonthlyInvoicePDFView, PublicPricingView,
@@ -24,6 +24,7 @@ urlpatterns = [
     path('payment/verify/', VerifyPaymentView.as_view(), name='payment_verify'),
     path('register-company/', BackofficeRegisterCompanyView.as_view(), name='register_company'),
     path('backoffice/organizations/', BackofficeOrganizationListView.as_view(), name='backoffice_organizations'),
+    path('backoffice/storage/organizations/', BackofficeStorageOrganizationListView.as_view(), name='backoffice-storage-organizations'),
     path('payments/backoffice/', BackofficePaymentListView.as_view(), name='backoffice-payment-list'),
     path('backoffice/email-logs/', BackofficeEmailLogListView.as_view(), name='backoffice-email-logs'),
     path('backoffice/email-logs/<int:pk>/resend/', BackofficeEmailLogResendView.as_view(), name='backoffice-email-logs-resend'),

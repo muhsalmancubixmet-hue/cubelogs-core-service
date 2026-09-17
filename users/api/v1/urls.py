@@ -26,6 +26,8 @@ router.register('permissions-flags', PermissionFlagViewSet, basename='permission
 urlpatterns = [
     # Auth endpoints
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair_standard'),
+    path('token/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh_standard'),
     path('auth/magic-login/', MagicLoginView.as_view(), name='magic_login'),
     path('auth/logout/', LogoutView.as_view(), name='magic_logout'),
     path('auth/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),

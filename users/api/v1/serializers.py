@@ -290,6 +290,10 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 if mem.role:
                     data['role'] = mem.role.id
                     data['role_name'] = mem.role.name
+
+        if instance.useDefaultPermissions or not data.get('permissions'):
+            data['permissions'] = data.get('effective_permissions') or []
+
         return data
 
     def get_effective_permissions(self, obj):
@@ -503,9 +507,17 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 existing.last_name = validated_data['last_name']
             if validated_data.get('phone'):
                 existing.phone = validated_data['phone']
+            if role_obj:
+                existing.role = role_obj
+                existing.role_name = role_obj.name
             existing.organization = target_org
             existing.employment_status = 'Active'
             existing.save()
+
+            use_default = validated_data.get('useDefaultPermissions', self.initial_data.get('useDefaultPermissions', getattr(existing, 'useDefaultPermissions', True)))
+            perms_input = validated_data.get('permissions', self.initial_data.get('permissions', getattr(existing, 'permissions', [])))
+            effective_role = role_obj or existing.role
+            self._sync_permission_overrides(existing, effective_role, use_default, perms_input)
 
             # Queue welcome email for existing user joining new/reactivated org (Use existing password)
             try:
@@ -535,6 +547,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 employee.role_name = employee.role.name
                 employee.save(update_fields=['role_name'])
 
+            use_default = validated_data.get('useDefaultPermissions', self.initial_data.get('useDefaultPermissions', getattr(employee, 'useDefaultPermissions', True)))
+            perms_input = validated_data.get('permissions', self.initial_data.get('permissions', getattr(employee, 'permissions', [])))
+            effective_role = role_obj or employee.role
+            self._sync_permission_overrides(employee, effective_role, use_default, perms_input)
+
             # Create initial OrganizationMembership for target org
             OrganizationMembership.objects.create(
                 user=employee,
@@ -560,6 +577,53 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 logging.getLogger(__name__).error("Failed to queue onboarding email for %s: %s", employee.email, exc)
 
             return employee
+
+    def _sync_permission_overrides(self, instance, role, use_default, permissions):
+        from users.models import PermissionFlag
+
+        if isinstance(use_default, str):
+            use_default = use_default.lower() not in ('false', '0')
+        if isinstance(permissions, str):
+            import json
+            try:
+                permissions = json.loads(permissions)
+            except Exception:
+                permissions = []
+
+        update_fields = []
+        if use_default is not None and instance.useDefaultPermissions != use_default:
+            instance.useDefaultPermissions = use_default
+            update_fields.append('useDefaultPermissions')
+
+        if permissions is not None and instance.permissions != permissions:
+            instance.permissions = list(permissions)
+            update_fields.append('permissions')
+
+        if not use_default and role:
+            perms_set = set(permissions or [])
+            role_perms = set(role.permissions.values_list('key', flat=True))
+            additions = perms_set - role_perms
+            removals = role_perms - perms_set
+
+            extra_flags = PermissionFlag.objects.filter(key__in=additions, is_active=True)
+            denied_flags = PermissionFlag.objects.filter(key__in=removals, is_active=True)
+
+            instance.extra_permissions.set(extra_flags)
+            instance.denied_permissions.set(denied_flags)
+            instance.extra_permissions_json = list(additions)
+            instance.denied_permissions_json = list(removals)
+            update_fields.extend(['extra_permissions_json', 'denied_permissions_json'])
+        elif use_default:
+            instance.extra_permissions.clear()
+            instance.denied_permissions.clear()
+            if instance.extra_permissions_json or instance.denied_permissions_json:
+                instance.extra_permissions_json = []
+                instance.denied_permissions_json = []
+                update_fields.extend(['extra_permissions_json', 'denied_permissions_json'])
+
+        if update_fields:
+            instance.save(update_fields=list(set(update_fields)))
+        instance.clear_permission_cache()
 
     def update(self, instance, validated_data):
         from users.models import OrganizationMembership
@@ -614,5 +678,10 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 if lwd_val is not None:
                     mem.last_working_date = lwd_val
                 mem.save()
+
+        use_default = validated_data.get('useDefaultPermissions', self.initial_data.get('useDefaultPermissions', getattr(employee, 'useDefaultPermissions', True)))
+        perms_input = validated_data.get('permissions', self.initial_data.get('permissions', getattr(employee, 'permissions', [])))
+        effective_role = role_obj or employee.role
+        self._sync_permission_overrides(employee, effective_role, use_default, perms_input)
 
         return employee

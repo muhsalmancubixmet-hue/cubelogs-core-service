@@ -20,6 +20,9 @@ def create_project(company, name, description=None, project_type='Internal', pro
     # Initialize default statuses idempotently for organization
     initialize_default_statuses(company)
 
+    from projects.rich_text_utils import validate_rich_text_no_base64, reconcile_entity_rich_text_attachments
+    validate_rich_text_no_base64(description, field_name='description')
+
     if status is None:
         status = get_default_status(company)
 
@@ -103,5 +106,7 @@ def create_project(company, name, description=None, project_type='Internal', pro
             is_temporary=False,
             expires_at=None
         )
+
+    reconcile_entity_rich_text_attachments(project, user=user)
 
     return project

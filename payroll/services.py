@@ -2,7 +2,7 @@
 #       Payroll Services - Salary Calculation, Version Resolution & History
 # --------------------------------------------------------------------------------
 
-from datetime import date as datetime_date
+from datetime import date as datetime_date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from django.db import transaction
 from django.utils import timezone
@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError, PermissionDenied
 
 from core.models import AuditLog
 from attendance.models import AttendancePeriod, AttendancePeriodEmployeeSnapshot
+from users.models import OrganizationMembership
 from payroll.models import (
     SalaryComponent,
     EmployeeSalaryStructure,
@@ -33,17 +34,22 @@ def is_payroll_locked(organization, year, month):
     ).exists()
 
 
-def get_employee_salary_structure(employee, target_date):
+def get_employee_salary_structure(employee, organization, target_date=None):
     """
     Resolves the active salary structure in effect for an employee on a target date.
-    Uses the latest structure where effective_from <= target_date.
+    Uses the latest structure where effective_from <= target_date within the explicit organization.
     """
-    if not employee or not target_date:
+    if target_date is None and isinstance(organization, (datetime_date, datetime)):
+        # Fallback for transition / legacy calls where organization was omitted
+        target_date = organization
+        organization = getattr(employee, 'organization', None)
+
+    if not employee or not organization or not target_date:
         return None
-    org = employee.organization
+
     return EmployeeSalaryStructure.objects.filter(
         employee=employee,
-        organization=org,
+        organization=organization,
         is_active=True,
         effective_from__lte=target_date
     ).order_by('-effective_from', '-created_at').first()
@@ -136,8 +142,15 @@ def assign_or_revise_salary_structure(employee, organization, effective_from, co
     if effective_from.day != 1:
         raise ValidationError({"effective_from": "Salary effective date must be the first day of a month."})
 
-    if employee.organization != organization:
-        raise PermissionDenied("Cannot assign salary structure to an employee outside your organization.")
+    has_membership = OrganizationMembership.objects.filter(
+        user=employee,
+        organization=organization,
+        is_active_in_org=True,
+        is_deleted=False
+    ).exists()
+    if not has_membership:
+        if OrganizationMembership.objects.filter(user=employee).exists() or getattr(employee, 'organization', None) != organization:
+            raise PermissionDenied("Cannot assign salary structure to an employee outside your organization.")
 
     if compensation_type not in ['MONTHLY', 'DAILY', 'HOURLY']:
         raise ValidationError({"compensation_type": "Invalid compensation type. Must be 'MONTHLY', 'DAILY', or 'HOURLY'."})
@@ -259,7 +272,7 @@ def assign_or_revise_salary_structure(employee, organization, effective_from, co
     return structure
 
 
-def calculate_employee_payroll(employee, attendance_snapshot, salary_structure, adjustments=None, proration_basis='WORKING_DAYS'):
+def calculate_employee_payroll(employee, attendance_snapshot, salary_structure, adjustments=None, proration_basis='WORKING_DAYS', organization=None):
     """
     Computes individual monthly payroll calculation for one employee based strictly on
     their finalized AttendancePeriodEmployeeSnapshot, active EmployeeSalaryStructure,
@@ -362,9 +375,14 @@ def calculate_employee_payroll(employee, attendance_snapshot, salary_structure, 
         worked_hours = (Decimal(str(attendance_snapshot.total_worked_minutes if attendance_snapshot else 0)) / Decimal('60')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         paid_leave_hours = (payable_hours - worked_hours) if payable_hours > worked_hours else Decimal('0.00')
 
-        org = employee.organization
+        org = organization
+        if not org and salary_structure and getattr(salary_structure, 'organization', None):
+            org = salary_structure.organization
+        if not org and attendance_snapshot and getattr(attendance_snapshot, 'attendance_period', None):
+            org = attendance_snapshot.attendance_period.organization
+
         paid_leave_eligible = True
-        if hasattr(org, 'settings') and org.settings is not None:
+        if org and hasattr(org, 'settings') and org.settings is not None:
             paid_leave_eligible = getattr(org.settings, 'hourly_wage_paid_leave_eligible', True)
 
         wage_earnings = (contractual_hourly_rate * payable_hours).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -440,9 +458,14 @@ def calculate_employee_payroll(employee, attendance_snapshot, salary_structure, 
         contractual_daily_rate = Decimal(str(salary_structure.daily_rate or '0.00')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         daily_rate = contractual_daily_rate.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)
 
-        org = employee.organization
+        org = organization
+        if not org and salary_structure and getattr(salary_structure, 'organization', None):
+            org = salary_structure.organization
+        if not org and attendance_snapshot and getattr(attendance_snapshot, 'attendance_period', None):
+            org = attendance_snapshot.attendance_period.organization
+
         paid_leave_eligible = True
-        if hasattr(org, 'settings') and org.settings is not None:
+        if org and hasattr(org, 'settings') and org.settings is not None:
             paid_leave_eligible = getattr(org.settings, 'daily_wage_paid_leave_eligible', True)
 
         if paid_leave_eligible:
@@ -738,7 +761,7 @@ def calculate_payroll_period(organization, year, month, user):
 
         for att_snap in att_snapshots:
             emp = att_snap.employee
-            salary_struct = salary_structures_map.get(emp.id) or get_employee_salary_structure(emp, target_date)
+            salary_struct = salary_structures_map.get(emp.id) or get_employee_salary_structure(emp, organization, target_date)
             emp_adjustments = adjustments_by_emp.get(emp.id, [])
 
             calc_res = calculate_employee_payroll(
@@ -746,7 +769,8 @@ def calculate_payroll_period(organization, year, month, user):
                 attendance_snapshot=att_snap,
                 salary_structure=salary_struct,
                 adjustments=emp_adjustments,
-                proration_basis=period.proration_basis
+                proration_basis=period.proration_basis,
+                organization=organization,
             )
 
             snap_obj = PayrollEmployeeSnapshot(

@@ -111,7 +111,7 @@ class TenantIsolationAndAuditTaskTestCase(TestCase):
         Celery audit task runs cleanly, reconciles usage across orgs, and
         strictly causes ZERO wallet debits and ZERO MonthlyInvoice creation.
         """
-        audit_date = date(2026, 9, 7)
+        audit_date = date(2026, 9, 9)
         date_str = audit_date.isoformat()
 
         # Org A uploads 2 GB
@@ -121,7 +121,7 @@ class TenantIsolationAndAuditTaskTestCase(TestCase):
             original_filename="audit_file.dat",
             size_bytes=2_000_000_000,
             file_path="project_attachments/2026/09/audit_file.dat",
-            uploaded_at=datetime(2026, 9, 7, 8, 0, 0, tzinfo=dt_timezone.utc)
+            uploaded_at=datetime(2026, 9, 9, 8, 0, 0, tzinfo=dt_timezone.utc)
         )
 
         initial_invoice_count = MonthlyInvoice.objects.count()

@@ -1,14 +1,23 @@
 import calendar
+import logging
 import math
+import os
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal, ROUND_HALF_UP
+from django.conf import settings
 from django.db import transaction, models, IntegrityError
 from django.utils import timezone
 
+from core.models import Organization
 from storage_billing.models import StorageFile, StorageEvent, StorageDailyUsage
 from subscribers.models import GlobalBillingSettings
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_CREDIT_SIZE_BYTES = 1_000_000_000  # Commercial decimal GB (1,000,000,000 bytes)
 DEFAULT_MONTHLY_CREDIT_PRICE = Decimal('20.00')
+
+_UNSET = object()
 
 
 class StorageCalculationService:
@@ -96,27 +105,37 @@ class StorageCalculationService:
         Rule 8:
         A file counts on EVERY calendar day during which it existed in the customer's billable lifecycle.
         Upload and deletion days BOTH count.
-        target_date must be a datetime.date object.
+        Evaluated using explicit UTC half-open boundaries [day_start, next_day_start).
         """
-        upload_date = storage_file.uploaded_at.date()
-        if upload_date > target_date:
+        if isinstance(target_date, datetime):
+            target_date = target_date.date()
+        day_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=dt_timezone.utc)
+        next_day_start = day_start + timedelta(days=1)
+
+        if storage_file.uploaded_at >= next_day_start:
             return False
         if storage_file.deleted_at is None:
             return True
-        return target_date <= storage_file.deleted_at.date()
+        return storage_file.deleted_at >= day_start
 
     @staticmethod
     def get_billable_files_qs(organization, target_date):
         """
         Queries distinct StorageFile records that count towards target_date for an organization.
         Criteria:
-            uploaded_at.date <= target_date AND (deleted_at IS NULL OR deleted_at.date >= target_date)
+            uploaded_at < next_day_start AND (deleted_at IS NULL OR deleted_at >= day_start)
+        Evaluated using explicit UTC half-open boundaries [day_start, next_day_start).
         """
+        if isinstance(target_date, datetime):
+            target_date = target_date.date()
+        day_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=dt_timezone.utc)
+        next_day_start = day_start + timedelta(days=1)
+
         return StorageFile.objects.filter(
             organization=organization,
-            uploaded_at__date__lte=target_date
+            uploaded_at__lt=next_day_start
         ).filter(
-            models.Q(deleted_at__isnull=True) | models.Q(deleted_at__date__gte=target_date)
+            models.Q(deleted_at__isnull=True) | models.Q(deleted_at__gte=day_start)
         )
 
 
@@ -140,7 +159,8 @@ class StorageService:
         content_type: str | None = None,
         storage_backend: str = 'private_filesystem',
         uploaded_at=None,
-        metadata: dict | None = None
+        metadata: dict | None = None,
+        event_actor=_UNSET,
     ) -> StorageFile:
         """
         Immediately records a customer-uploaded physical file and appends an UPLOAD event.
@@ -165,6 +185,8 @@ class StorageService:
         if existing:
             return existing
 
+        actor = uploaded_by if event_actor is _UNSET else event_actor
+
         try:
             with transaction.atomic():
                 storage_file = StorageFile.objects.create(
@@ -188,7 +210,7 @@ class StorageService:
                     event_type='UPLOAD',
                     occurred_at=now,
                     size_bytes=size_bytes,
-                    actor=uploaded_by,
+                    actor=actor,
                     metadata=metadata or {},
                 )
 
@@ -275,6 +297,33 @@ class StorageService:
         return storage_file
 
     @classmethod
+    def get_metering_start_date(cls) -> date:
+        raw = getattr(settings, 'STORAGE_METERING_START_DATE', '2026-09-09')
+        if isinstance(raw, date):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return date.fromisoformat(raw.strip())
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid STORAGE_METERING_START_DATE format '{raw}': expected YYYY-MM-DD"
+                ) from exc
+        raise ValueError(f"Invalid STORAGE_METERING_START_DATE type: {type(raw).__name__}")
+
+    @classmethod
+    def get_metering_catchup_days(cls) -> int:
+        raw = getattr(settings, 'STORAGE_METERING_CATCHUP_DAYS', 14)
+        try:
+            val = int(raw)
+            if val < 0:
+                raise ValueError()
+            return val
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Invalid STORAGE_METERING_CATCHUP_DAYS: expected non-negative integer, got {raw}"
+            )
+
+    @classmethod
     def calculate_or_update_daily_usage(
         cls,
         organization,
@@ -286,59 +335,360 @@ class StorageService:
         Computes or updates the canonical StorageDailyUsage row for (organization, usage_date).
         Idempotent: re-running updates the existing row deterministically.
         If the row is already finalized and force_recompute is False, it remains untouched.
+        Preserves existing pricing snapshots on provisional rows: once a daily row is created,
+        subsequent recalculations reuse its stored snapshots, immune to global setting changes.
         """
-        # Check existing row
-        existing = StorageDailyUsage.objects.filter(
-            organization=organization,
-            usage_date=usage_date
-        ).first()
+        if isinstance(usage_date, datetime):
+            usage_date = usage_date.date()
 
-        if existing and existing.is_finalized and not force_recompute:
-            return existing, False
+        with transaction.atomic():
+            # Serialize concurrent metering for the same organization using DB row lock
+            Organization.objects.select_for_update().get(pk=organization.pk)
 
-        # 1. Fetch Global Billing Settings for rates
-        g_settings = GlobalBillingSettings.get_settings()
-        credit_size = getattr(g_settings, 'storage_credit_size_bytes', DEFAULT_CREDIT_SIZE_BYTES)
-        if credit_size is None or credit_size <= 0:
-            raise ValueError(
-                f"GlobalBillingSettings.storage_credit_size_bytes must be a positive integer greater than 0, got {credit_size}"
+            # Check existing row
+            existing = StorageDailyUsage.objects.filter(
+                organization=organization,
+                usage_date=usage_date
+            ).select_for_update().first()
+
+            if existing and existing.is_finalized and not force_recompute:
+                return existing, False
+
+            # 1. Fetch pricing: preserve existing snapshots for unfinalized rows
+            if existing and existing.storage_credit_size_bytes_snapshot:
+                credit_size = existing.storage_credit_size_bytes_snapshot
+                monthly_price = existing.monthly_credit_price_snapshot
+            else:
+                g_settings = GlobalBillingSettings.get_settings()
+                credit_size = getattr(g_settings, 'storage_credit_size_bytes', DEFAULT_CREDIT_SIZE_BYTES)
+                if credit_size is None or credit_size <= 0:
+                    raise ValueError(
+                        f"GlobalBillingSettings.storage_credit_size_bytes must be a positive integer greater than 0, got {credit_size}"
+                    )
+                monthly_price = getattr(g_settings, 'storage_credit_monthly_price', DEFAULT_MONTHLY_CREDIT_PRICE)
+
+            # 2. Query distinct billable files on usage_date
+            files_qs = StorageCalculationService.get_billable_files_qs(organization, usage_date)
+            agg = files_qs.aggregate(total_bytes=models.Sum('size_bytes'))
+            total_billable_bytes = agg['total_bytes'] or 0
+
+            # 3. Calculate credits and rate using preserved snapshot pricing
+            billable_gb, credits = StorageCalculationService.calculate_storage_credits(
+                total_billable_bytes, credit_size
             )
-        monthly_price = getattr(g_settings, 'storage_credit_monthly_price', DEFAULT_MONTHLY_CREDIT_PRICE)
+            days_in_month = StorageCalculationService.get_days_in_month(usage_date.year, usage_date.month)
+            daily_rate = StorageCalculationService.calculate_daily_credit_rate(monthly_price, days_in_month)
+            charge = StorageCalculationService.calculate_daily_charge(credits, monthly_price, days_in_month)
 
-        # 2. Query distinct billable files on usage_date
-        files_qs = StorageCalculationService.get_billable_files_qs(organization, usage_date)
-        agg = files_qs.aggregate(total_bytes=models.Sum('size_bytes'))
-        total_billable_bytes = agg['total_bytes'] or 0
+            # 4. Finalization status:
+            # - If caller explicitly specifies is_finalized, respect it.
+            # - Otherwise: only finalize closed past UTC days if row existed during that usage day
+            #   (row.created_at < next_day_start). Reconstructed missing closed-day rows remain unfinalized.
+            today_utc = timezone.now().date()
+            next_day_start = datetime(
+                usage_date.year, usage_date.month, usage_date.day, 0, 0, 0, tzinfo=dt_timezone.utc
+            ) + timedelta(days=1)
 
-        # 3. Calculate credits and rate
-        billable_gb, credits = StorageCalculationService.calculate_storage_credits(
-            total_billable_bytes, credit_size
-        )
-        days_in_month = StorageCalculationService.get_days_in_month(usage_date.year, usage_date.month)
-        daily_rate = StorageCalculationService.calculate_daily_credit_rate(monthly_price, days_in_month)
-        charge = StorageCalculationService.calculate_daily_charge(credits, monthly_price, days_in_month)
+            if is_finalized is not None:
+                final_flag = is_finalized
+            else:
+                final_flag = bool(
+                    usage_date < today_utc
+                    and existing is not None
+                    and existing.created_at < next_day_start
+                )
 
-        # 4. Finalization status: past UTC days are finalized by default
+            defaults = {
+                'billable_bytes': total_billable_bytes,
+                'billable_gb': billable_gb,
+                'storage_credits': credits,
+                'storage_credit_size_bytes_snapshot': credit_size,
+                'monthly_credit_price_snapshot': Decimal(str(monthly_price)),
+                'daily_credit_rate_snapshot': daily_rate,
+                'storage_charge': charge,
+                'days_in_month': days_in_month,
+                'calculation_version': 1,
+                'is_finalized': final_flag,
+                'calculated_at': timezone.now(),
+            }
+
+            try:
+                usage_obj, created = StorageDailyUsage.objects.update_or_create(
+                    organization=organization,
+                    usage_date=usage_date,
+                    defaults=defaults
+                )
+            except IntegrityError:
+                # Handle race condition where another transaction inserted concurrently
+                usage_obj = StorageDailyUsage.objects.filter(
+                    organization=organization,
+                    usage_date=usage_date
+                ).first()
+                if not usage_obj:
+                    raise
+                if not usage_obj.is_finalized or force_recompute:
+                    for attr, val in defaults.items():
+                        setattr(usage_obj, attr, val)
+                    usage_obj.save()
+                created = False
+
+            return usage_obj, created
+
+    @classmethod
+    def reconcile_usage_date_range(
+        cls,
+        organization,
+        start_date: date,
+        end_date: date
+    ) -> dict:
+        """
+        Reconciles daily usage snapshots across a contiguous date range [start_date, end_date].
+        - Enforces go-live lower bound (STORAGE_METERING_START_DATE).
+        - Processes dates in ascending order.
+        - Closed dates created during usage day are finalized.
+        - Missing closed dates are created as provisional (unfinalized).
+        - Existing finalized dates are skipped safely without recomputation.
+        - Ongoing today is created/updated provisionally.
+        - Returns structured counters for telemetry and audit.
+        """
+        golive_date = cls.get_metering_start_date()
         today_utc = timezone.now().date()
-        final_flag = is_finalized if is_finalized is not None else (usage_date < today_utc)
 
-        defaults = {
-            'billable_bytes': total_billable_bytes,
-            'billable_gb': billable_gb,
-            'storage_credits': credits,
-            'storage_credit_size_bytes_snapshot': credit_size,
-            'monthly_credit_price_snapshot': Decimal(str(monthly_price)),
-            'daily_credit_rate_snapshot': daily_rate,
-            'storage_charge': charge,
-            'days_in_month': days_in_month,
-            'calculation_version': 1,
-            'is_finalized': final_flag,
-            'calculated_at': timezone.now(),
+        if isinstance(start_date, datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime):
+            end_date = end_date.date()
+
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+
+        counters = {
+            'dates_considered': 0,
+            'rows_created': 0,
+            'rows_updated': 0,
+            'rows_finalized': 0,
+            'finalized_skipped': 0,
+            'historical_provisional_created': 0,
+            'pre_golive_skipped': 0,
+            'errors_count': 0,
         }
 
-        usage_obj, created = StorageDailyUsage.objects.update_or_create(
-            organization=organization,
-            usage_date=usage_date,
-            defaults=defaults
-        )
-        return usage_obj, created
+        # Check if entire range is before go-live
+        if end_date < golive_date:
+            skipped_days = (end_date - start_date).days + 1
+            counters['pre_golive_skipped'] = skipped_days
+            logger.info(
+                "Date range %s to %s is entirely before go-live %s. Skipped %d days.",
+                start_date, end_date, golive_date, skipped_days
+            )
+            return counters
+
+        # Bound start_date to go-live
+        if start_date < golive_date:
+            skipped_days = (golive_date - start_date).days
+            counters['pre_golive_skipped'] = skipped_days
+            logger.info(
+                "Start date %s is before go-live %s. Skipped %d days; starting at %s.",
+                start_date, golive_date, skipped_days, golive_date
+            )
+            start_date = golive_date
+
+        curr = start_date
+        while curr <= end_date:
+            counters['dates_considered'] += 1
+            try:
+                # Check if already finalized to skip unnecessary recomputation
+                existing = StorageDailyUsage.objects.filter(
+                    organization=organization,
+                    usage_date=curr
+                ).first()
+
+                if existing and existing.is_finalized:
+                    counters['finalized_skipped'] += 1
+                else:
+                    usage_obj, created = cls.calculate_or_update_daily_usage(
+                        organization=organization,
+                        usage_date=curr
+                    )
+                    if created:
+                        counters['rows_created'] += 1
+                        if curr < today_utc:
+                            counters['historical_provisional_created'] += 1
+                    else:
+                        counters['rows_updated'] += 1
+                        if usage_obj.is_finalized and not (existing and existing.is_finalized):
+                            counters['rows_finalized'] += 1
+            except Exception as exc:
+                counters['errors_count'] += 1
+                logger.error(
+                    "Error calculating daily usage for Org %s (ID %s) on date %s: %s",
+                    organization.name, organization.id, curr, str(exc), exc_info=True
+                )
+            curr += timedelta(days=1)
+
+        return counters
+
+
+class StorageReconciliationService:
+    """
+    Shared service for reconciling source media records (e.g. ProjectAttachment)
+    with the storage billing ledger (StorageFile and StorageEvent).
+    """
+
+    @classmethod
+    def reconcile_project_attachments(
+        cls,
+        organization=None,
+        dry_run: bool = True
+    ) -> dict:
+        """
+        Scans ProjectAttachment rows and ensures each valid physical media file
+        has a corresponding StorageFile and initial UPLOAD StorageEvent.
+
+        Key Invariants:
+        - Tenant context is strictly derived from attachment.company.
+          Never falls back to Employee.organization or uploaded_by.organization.
+        - Verifies physical file existence before registration.
+        - Uses actual storage.size(file.name) for StorageFile.size_bytes.
+        - Idempotent: Skips if StorageFile already exists for (company, 'projects', 'ProjectAttachment', str(id)).
+        - Timestamp: Sets StorageFile.uploaded_at = attachment.created_at.
+        - Event: Exactly one UPLOAD event with actor=None and audit metadata.
+        - Temporary/expired attachments: Reconciled as normal if physical file exists.
+        - Partial failure isolation: Each attachment is processed in an isolated savepoint.
+        - Dry run: If dry_run=True, executes all validation checks but creates ZERO database rows.
+        """
+        from projects.models import ProjectAttachment
+
+        qs = ProjectAttachment.objects.all().order_by('id')
+
+        resolved_org = organization
+        if resolved_org is not None:
+            if not hasattr(resolved_org, 'id'):
+                from core.models import Organization
+                try:
+                    resolved_org = Organization.objects.get(id=resolved_org)
+                except (Organization.DoesNotExist, ValueError):
+                    raise ValueError(f"Organization with id '{organization}' does not exist.")
+            qs = qs.filter(company=resolved_org)
+
+        stats = {
+            'dry_run': dry_run,
+            'scanned': 0,
+            'created': 0,
+            'already_tracked': 0,
+            'missing_file': 0,
+            'missing_company': 0,
+            'tenant_mismatch': 0,
+            'size_mismatch': 0,
+            'errors': 0,
+            'details': [],
+        }
+
+        for att in qs.iterator(chunk_size=500):
+            stats['scanned'] += 1
+
+            company = att.company
+            if not company:
+                stats['missing_company'] += 1
+                stats['details'].append(f"Attachment {att.id}: missing company.")
+                continue
+
+            # Verify canonical parent organization matches attachment.company if parent exists
+            target_comp = None
+            if att.project_id and att.project:
+                target_comp = att.project.company
+            elif att.epic_id and att.epic:
+                target_comp = att.epic.company
+            elif att.story_id and att.story and att.story.project:
+                target_comp = att.story.project.company
+            elif att.task_id and att.task and att.task.story and att.task.story.project:
+                target_comp = att.task.story.project.company
+            elif att.comment_id and att.comment:
+                c = att.comment
+                if c.epic_id and c.epic:
+                    target_comp = c.epic.company
+                elif c.story_id and c.story and c.story.project:
+                    target_comp = c.story.project.company
+                elif c.task_id and c.task and c.task.story and c.task.story.project:
+                    target_comp = c.task.story.project.company
+                elif c.subtask_id and c.subtask and c.subtask.task and c.subtask.task.story and c.subtask.task.story.project:
+                    target_comp = c.subtask.task.story.project.company
+
+            if target_comp and company.id != target_comp.id:
+                stats['tenant_mismatch'] += 1
+                stats['details'].append(
+                    f"Attachment {att.id}: company ID {company.id} does not match target entity company ID {target_comp.id}."
+                )
+                continue
+
+            # Tenant-scoped idempotency check
+            existing_sf = StorageFile.objects.filter(
+                organization=company,
+                source_module='projects',
+                source_model='ProjectAttachment',
+                source_object_id=str(att.id)
+            ).first()
+
+            if existing_sf:
+                stats['already_tracked'] += 1
+                continue
+
+            # Verify physical file existence in storage backend
+            if not (att.file and att.file.name):
+                stats['missing_file'] += 1
+                stats['details'].append(f"Attachment {att.id}: file field is empty or missing name.")
+                continue
+
+            try:
+                storage = att.file.storage
+                if not storage.exists(att.file.name):
+                    stats['missing_file'] += 1
+                    stats['details'].append(f"Attachment {att.id}: physical file missing from storage backend.")
+                    continue
+                actual_size = storage.size(att.file.name)
+            except Exception as exc:
+                stats['errors'] += 1
+                stats['details'].append(f"Attachment {att.id}: storage backend error: {exc}")
+                continue
+
+            has_size_mismatch = (att.file_size is not None and att.file_size != actual_size)
+            if has_size_mismatch:
+                stats['size_mismatch'] += 1
+
+            if dry_run:
+                stats['created'] += 1
+                continue
+
+            # Non-dry-run: Register inside an isolated per-item savepoint
+            try:
+                with transaction.atomic():
+                    metadata = {
+                        "is_backfill": True,
+                        "reconciliation_source": "ProjectAttachment",
+                        "original_attachment_created_at": att.created_at.isoformat(),
+                        "project_attachment_file_size": att.file_size,
+                        "actual_storage_size": actual_size,
+                    }
+                    if has_size_mismatch:
+                        metadata["size_mismatch_detected"] = True
+
+                    filename = att.file_name or os.path.basename(att.file.name)
+                    StorageService.record_file_upload(
+                        organization=company,
+                        original_filename=filename,
+                        size_bytes=actual_size,
+                        file_path=att.file.name,
+                        source_object_id=str(att.id),
+                        source_module='projects',
+                        source_model='ProjectAttachment',
+                        uploaded_by=att.uploaded_by,
+                        uploaded_at=att.created_at,
+                        metadata=metadata,
+                        event_actor=None,
+                    )
+                    stats['created'] += 1
+            except Exception as exc:
+                stats['errors'] += 1
+                stats['details'].append(f"Attachment {att.id}: registration error: {exc}")
+
+        return stats

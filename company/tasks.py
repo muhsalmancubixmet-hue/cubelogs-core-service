@@ -354,7 +354,11 @@ CubeLogs Billing Team"""
                             proj_unit = Decimal(str(g_settings.tasks_module_price)) if proj_enabled else Decimal('0.00')
                             proj_total = (Decimal(str(emp_count)) * proj_unit) if proj_enabled else Decimal('0.00')
 
-                            total = emp_total + att_total + proj_total
+                            # Storage billing in arrears
+                            storage_info = BillingService.get_previous_month_storage_billing(org, billing_month)
+                            storage_charge = storage_info['storage_charge']
+
+                            total = emp_total + att_total + proj_total + storage_charge
 
                             invoice.employee_count_snapshot = emp_count
                             invoice.employee_unit_price_snapshot = seat_price
@@ -368,6 +372,14 @@ CubeLogs Billing Team"""
                             invoice.project_unit_price_snapshot = proj_unit
                             invoice.project_total_snapshot = proj_total
                             invoice.project_price_snapshot = proj_total
+
+                            # Storage snapshots
+                            invoice.storage_usage_month_snapshot = storage_info['storage_usage_month']
+                            invoice.storage_charge_snapshot = storage_charge
+                            invoice.storage_finalized_days_snapshot = storage_info['storage_finalized_days']
+                            invoice.storage_billable_bytes_days_snapshot = storage_info['storage_billable_bytes_days']
+                            invoice.storage_credit_days_snapshot = storage_info['storage_credit_days']
+
                             invoice.subtotal_snapshot = total
                             invoice.tax_percentage_snapshot = Decimal('0.00')
                             invoice.tax_amount_snapshot = Decimal('0.00')
@@ -410,6 +422,9 @@ CubeLogs Billing Team"""
                             "project_enabled": invoice.project_enabled_snapshot,
                             "project_unit_price": invoice.project_unit_price_snapshot or g_settings.tasks_module_price,
                             "project_price": invoice.project_total_snapshot or invoice.project_price_snapshot or Decimal('0.00'),
+                            "storage_charge": invoice.storage_charge_snapshot or Decimal('0.00'),
+                            "storage_usage_month": invoice.storage_usage_month_snapshot.strftime('%B %Y') if invoice.storage_usage_month_snapshot else "N/A",
+                            "storage_finalized_days": invoice.storage_finalized_days_snapshot or 0,
                             "subtotal": invoice.subtotal_snapshot or invoice.amount,
                             "tax_percentage": invoice.tax_percentage_snapshot or Decimal('0.00'),
                             "tax_amount": invoice.tax_amount_snapshot or Decimal('0.00'),

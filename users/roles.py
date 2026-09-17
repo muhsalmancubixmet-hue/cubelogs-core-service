@@ -58,6 +58,10 @@ ALL_PERMISSION_DEFS = [
     { 'id': 'projects.epic.edit', 'label': 'Edit Epic', 'category': 'project_epics', 'category_label': 'Project Management' },
     { 'id': 'projects.epic.delete', 'label': 'Delete Epic', 'category': 'project_epics', 'category_label': 'Project Management' },
     { 'id': 'projects.epic.assign', 'label': 'Assign Stories to Epic', 'category': 'project_epics', 'category_label': 'Project Management' },
+    { 'id': 'project_epics:view', 'label': 'View Project Epics', 'category': 'project_epics', 'category_label': 'Project Management' },
+    { 'id': 'project_epics:create', 'label': 'Create Project Epics', 'category': 'project_epics', 'category_label': 'Project Management' },
+    { 'id': 'project_epics:update', 'label': 'Edit Project Epics', 'category': 'project_epics', 'category_label': 'Project Management' },
+    { 'id': 'project_epics:delete', 'label': 'Delete Project Epics', 'category': 'project_epics', 'category_label': 'Project Management' },
 
     # Stories
     { 'id': 'projects.story.view', 'label': 'View Stories', 'category': 'project_stories', 'category_label': 'Project Management' },
@@ -110,6 +114,11 @@ ALL_PERMISSION_DEFS = [
     { 'id': 'projects.sprint.cancel', 'label': 'Cancel Sprint', 'category': 'project_sprints', 'category_label': 'Project Management' },
     { 'id': 'projects.sprint.reopen', 'label': 'Reopen Sprint', 'category': 'project_sprints', 'category_label': 'Project Management' },
     { 'id': 'projects.sprint.move_stories', 'label': 'Move Stories', 'category': 'project_sprints', 'category_label': 'Project Management' },
+    { 'id': 'project_sprints:view', 'label': 'View Project Sprints', 'category': 'project_sprints', 'category_label': 'Project Management' },
+    { 'id': 'project_sprints:create', 'label': 'Create Project Sprints', 'category': 'project_sprints', 'category_label': 'Project Management' },
+    { 'id': 'project_sprints:update', 'label': 'Edit Project Sprints', 'category': 'project_sprints', 'category_label': 'Project Management' },
+    { 'id': 'project_sprints:manage', 'label': 'Manage Project Sprints', 'category': 'project_sprints', 'category_label': 'Project Management' },
+    { 'id': 'project_sprints:delete', 'label': 'Delete Project Sprints', 'category': 'project_sprints', 'category_label': 'Project Management' },
 
     # Scrum Board
     { 'id': 'projects.board.view', 'label': 'View Scrum Board', 'category': 'project_scrum_board', 'category_label': 'Project Management' },
@@ -141,10 +150,17 @@ ALL_PERMISSION_DEFS = [
     { 'id': 'projects.settings.view', 'label': 'View Settings', 'category': 'project_settings', 'category_label': 'Project Management' },
     { 'id': 'projects.settings.edit', 'label': 'Edit Settings', 'category': 'project_settings', 'category_label': 'Project Management' },
 
+    # Project Statuses
+    { 'id': 'project_statuses:view', 'label': 'View Project Statuses', 'category': 'project_statuses', 'category_label': 'Project Management' },
+    { 'id': 'project_statuses:create', 'label': 'Create Project Statuses', 'category': 'project_statuses', 'category_label': 'Project Management' },
+    { 'id': 'project_statuses:update', 'label': 'Edit Project Statuses', 'category': 'project_statuses', 'category_label': 'Project Management' },
+    { 'id': 'project_statuses:delete', 'label': 'Delete Project Statuses', 'category': 'project_statuses', 'category_label': 'Project Management' },
+
     # Sprint Retrospective
     { 'id': 'projects.retrospective.view', 'label': 'View Retrospective', 'category': 'project_retrospective', 'category_label': 'Project Management' },
     { 'id': 'projects.retrospective.create', 'label': 'Create Retrospective Item', 'category': 'project_retrospective', 'category_label': 'Project Management' },
     { 'id': 'projects.retrospective.edit', 'label': 'Edit Retrospective', 'category': 'project_retrospective', 'category_label': 'Project Management' },
+    { 'id': 'projects.retrospective.manage', 'label': 'Manage Retrospective', 'category': 'project_retrospective', 'category_label': 'Project Management' },
     { 'id': 'projects.retrospective.close', 'label': 'Close Retrospective', 'category': 'project_retrospective', 'category_label': 'Project Management' },
 
     # Notifications
@@ -177,12 +193,12 @@ DEFAULT_ROLES = {
             'dashboard', 'attendance:staff', 'leaves:apply', 'holidays:view',
             'projects.overview.view', 'projects:view', 'projects:create', 'projects:update',
             'projects.backlog.view', 'projects.backlog.create', 'projects.backlog.edit', 'projects.backlog.delete', 'projects.backlog.move', 'projects.backlog.assign',
-            'projects.epic.view', 'projects.epic.create', 'projects.epic.edit', 'projects.epic.delete', 'projects.epic.assign',
+            'projects.epic.view', 'projects.epic.create', 'projects.epic.edit', 'projects.epic.delete', 'projects.epic.assign', 'project_epics:view', 'project_epics:create', 'project_epics:update', 'project_epics:delete',
             'projects.story.view', 'projects.story.create', 'projects.story.edit', 'projects.story.delete', 'projects.story.assign', 'projects.story.status', 'projects.story.move', 'project_stories:view', 'project_stories:create', 'project_stories:update', 'project_stories:delete',
             'projects.task.view', 'projects.task.create', 'projects.task.edit', 'projects.task.delete', 'projects.task.assign', 'projects.task.update_status', 'projects.task.log_time', 'project_tasks:view_all', 'project_tasks:create', 'project_tasks:update_all', 'project_tasks:delete',
             'projects.my_tasks.view', 'projects.my_tasks.update', 'projects.my_tasks.update_status', 'projects.my_tasks.log_time', 'projects.my_tasks.subtasks', 'project_tasks:view_own', 'project_tasks:update_own',
             'projects.subtask.create', 'projects.subtask.edit', 'projects.subtask.delete', 'projects.subtask.complete',
-            'projects.sprint.view', 'projects.sprint.create', 'projects.sprint.edit', 'projects.sprint.delete', 'projects.sprint.start', 'projects.sprint.complete', 'projects.sprint.cancel', 'projects.sprint.reopen', 'projects.sprint.move_stories',
+            'projects.sprint.view', 'projects.sprint.create', 'projects.sprint.edit', 'projects.sprint.delete', 'projects.sprint.start', 'projects.sprint.complete', 'projects.sprint.cancel', 'projects.sprint.reopen', 'projects.sprint.move_stories', 'project_sprints:view', 'project_sprints:create', 'project_sprints:update', 'project_sprints:manage', 'project_sprints:delete',
             'projects.board.view', 'projects.board.move_cards', 'projects.board.update_status', 'projects.board.manage',
             'projects.members.view', 'projects.members.manage', 'projects.members.assign', 'projects.members.remove', 'projects:members_manage',
             'projects.comment.view', 'projects.comment.create', 'projects.comment.edit', 'projects.comment.delete',
@@ -190,7 +206,7 @@ DEFAULT_ROLES = {
             'projects.reports.view', 'projects.reports.export',
             'projects.settings.view', 'projects.settings.edit',
             'project_statuses:view', 'project_statuses:create', 'project_statuses:update', 'project_statuses:delete',
-            'projects.retrospective.view', 'projects.retrospective.create', 'projects.retrospective.edit', 'projects.retrospective.close',
+            'projects.retrospective.view', 'projects.retrospective.create', 'projects.retrospective.edit', 'projects.retrospective.manage', 'projects.retrospective.close',
             'projects.notifications.manage'
         ]
     },

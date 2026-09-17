@@ -12,6 +12,9 @@ def create_epic(project, title, description=None, color='#3b82f6', priority='Med
     """
     Creates a new epic in a project with auto-generated EPIC-001 key.
     """
+    from projects.rich_text_utils import validate_rich_text_no_base64, reconcile_entity_rich_text_attachments
+    validate_rich_text_no_base64(description, field_name='description')
+
     epic_key = generate_epic_key(project)
 
     project_epic = ProjectEpic.objects.create(
@@ -37,5 +40,7 @@ def create_epic(project, title, description=None, color='#3b82f6', priority='Med
             entity_id=project_epic.id,
             details={"title": project_epic.title, "key": project_epic.key}
         )
+
+    reconcile_entity_rich_text_attachments(project_epic, user=user)
 
     return project_epic

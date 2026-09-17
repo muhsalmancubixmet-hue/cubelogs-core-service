@@ -27,6 +27,13 @@ class AttendanceLog(BaseModel):
         ('Absent', 'Absent'),
     ]
     employee = models.ForeignKey('users.Employee', on_delete=models.CASCADE, related_name='attendance_logs')
+    employee_profile = models.ForeignKey(
+        'users.EmployeeProfile',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='attendance_logs'
+    )
     employeeName = models.CharField(max_length=255)
     date = models.DateField()
     clockIn = models.DateTimeField(null=True, blank=True)
@@ -40,7 +47,25 @@ class AttendanceLog(BaseModel):
         db_table = 'api_attendancelog'
         indexes = [
             models.Index(fields=['employee', 'date', 'is_deleted'], name='att_log_emp_date_del_idx'),
+            models.Index(fields=['employee', 'clockIn'], name='attlog_emp_clockin_idx'),
+            models.Index(fields=['employee_profile', 'date'], name='attlog_prof_date_idx'),
         ]
+
+    def save(self, *args, **kwargs):
+        if self.employee_id and not self.employee_profile_id:
+            try:
+                from users.models import EmployeeProfile
+                prof = EmployeeProfile.objects.filter(user_id=self.employee_id).first()
+                if prof:
+                    self.employee_profile_id = prof.id
+            except Exception:
+                pass
+        elif self.employee_profile_id and not self.employee_id:
+            try:
+                self.employee_id = self.employee_profile.user_id
+            except Exception:
+                pass
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.employeeName} - {self.date} ({self.status})"

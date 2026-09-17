@@ -88,6 +88,45 @@ class IsSuperAdminUser(permissions.BasePermission):
         return True
 
 
+class IsPlatformBillingAdmin(permissions.BasePermission):
+    """
+    Strict platform-level permission for GlobalBillingSettings.
+    Only Django root superusers (is_superuser=True) or platform backoffice operators
+    (organization=None, isSuperAdmin=True) possessing the 'billing_settings' capability
+    are allowed to read or modify global billing settings.
+    Tenant users (organization is not None) are strictly forbidden, even if isSuperAdmin=True.
+    """
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+
+        # Django root superuser is always allowed
+        if user.is_superuser:
+            return True
+
+        # Any user belonging to an organization is a tenant user and must be strictly denied
+        if getattr(user, 'organization', None) is not None or getattr(user, 'organization_id', None) is not None:
+            return False
+
+        # Must be a platform backoffice administrator
+        if not getattr(user, 'isSuperAdmin', False):
+            return False
+
+        user_perms = getattr(user, 'permissions', [])
+        if not isinstance(user_perms, list):
+            user_perms = []
+
+        all_backoffice_perms = [
+            'packages', 'subscribers', 'leads', 'cms', 'faqs',
+            'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings',
+        ]
+        if not any(p in user_perms for p in all_backoffice_perms):
+            user_perms = all_backoffice_perms
+
+        return 'billing_settings' in user_perms
+
+
 from rest_framework import exceptions
 
 class DRFCheckModePermission(permissions.BasePermission):

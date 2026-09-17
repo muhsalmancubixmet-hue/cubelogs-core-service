@@ -172,6 +172,7 @@ class LeadViewSet(FilterMixinNew, viewsets.ModelViewSet):
 
 # PublicLeadCreateView: API endpoint for public users to generate a prospective lead enquiry.
 class PublicLeadCreateView(APIView):
+    authentication_classes = []
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):

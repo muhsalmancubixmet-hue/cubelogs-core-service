@@ -79,8 +79,8 @@ CSRF_TRUSTED_ORIGINS = env.list(
         "http://127.0.0.1:8000",
         "http://192.168.220.36:3000",
         "http://192.168.220.36:3001",
-        "http://192.168.220.42:3000",
-        "http://192.168.220.42:3001",
+        "http://192.168.220.39:3000",
+        "http://192.168.220.39:3001",
         "http://192.168.220.44:3000",
         "http://192.168.220.44:3001",
         "https://cubelogs-dashboard.vercel.app",
@@ -122,6 +122,11 @@ if is_dev:
             CSRF_TRUSTED_ORIGINS.append(origin)
 
 CORS_ALLOW_CREDENTIALS = True
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-organization-id',
+]
 
 
 # ------------------------------------------------------------------------------
@@ -150,6 +155,11 @@ EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = env('EMAIL_USE_TLS')
 EMAIL_USE_SSL = env('EMAIL_USE_SSL')
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='muhsalman.cubixmet@gmail.com')
+
+# File Upload Configuration
+DATA_UPLOAD_MAX_MEMORY_SIZE = env.int('DATA_UPLOAD_MAX_MEMORY_SIZE', default=2 * 1024 * 1024 * 1024)  # 2 GB
+FILE_UPLOAD_MAX_MEMORY_SIZE = env.int('FILE_UPLOAD_MAX_MEMORY_SIZE', default=20 * 1024 * 1024)        # 20 MB (spools to disk)
+MAX_ATTACHMENT_UPLOAD_SIZE = env.int('MAX_ATTACHMENT_UPLOAD_SIZE', default=2 * 1024 * 1024 * 1024)   # 2 GB
 
 
 # ------------------------------------------------------------------------------
@@ -405,9 +415,17 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = True if is_testing else env('CELERY_TASK_ALWAYS_EAGER', default=False)
+CELERY_TASK_STORE_EAGER_RESULT = True if is_testing else env('CELERY_TASK_STORE_EAGER_RESULT', default=True)
 
 ALLOW_MOCK_PAYMENTS = env('ALLOW_MOCK_PAYMENTS', cast=bool, default=False)
 TEST_MODE = False
+
+# ------------------------------------------------------------------------------
+#       Storage Billing Metering Settings
+# ------------------------------------------------------------------------------
+STORAGE_METERING_START_DATE = env('STORAGE_METERING_START_DATE', default='2026-09-09')
+STORAGE_BILLING_FIRST_USAGE_MONTH = env('STORAGE_BILLING_FIRST_USAGE_MONTH', default='2026-10-01')
+STORAGE_FIRST_BILLABLE_USAGE_MONTH = STORAGE_BILLING_FIRST_USAGE_MONTH
 
 if TEST_MODE:
     CELERY_BEAT_SCHEDULE = {
@@ -421,11 +439,15 @@ else:
     CELERY_BEAT_SCHEDULE = {
         'sweep-workspace-subscriptions-daily': {
             'task': 'company.tasks.sweep_workspace_subscriptions',
-            'schedule': crontab(hour='0,12', minute=0),
+            'schedule': crontab(hour='0,12', minute=15),
         },
         'reconcile-pending-wallet-transactions': {
             'task': 'company.tasks.reconcile_pending_wallet_transactions',
             'schedule': crontab(hour='*/6', minute=30),
+        },
+        'audit-workspace-storage-daily': {
+            'task': 'storage_billing.tasks.audit_workspace_storage',
+            'schedule': crontab(hour='0,12', minute=5),
         },
     }
 

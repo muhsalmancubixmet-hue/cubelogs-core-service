@@ -164,6 +164,13 @@ class MonthlyInvoice(BaseModel):
     tax_percentage_snapshot = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     tax_amount_snapshot = models.DecimalField(max_digits=20, decimal_places=2, null=True, blank=True)
 
+    # Storage usage billing snapshot fields (billed in arrears)
+    storage_usage_month_snapshot = models.DateField(null=True, blank=True)
+    storage_charge_snapshot = models.DecimalField(max_digits=20, decimal_places=2, default=Decimal('0.00'))
+    storage_finalized_days_snapshot = models.PositiveSmallIntegerField(default=0)
+    storage_billable_bytes_days_snapshot = models.BigIntegerField(default=0)
+    storage_credit_days_snapshot = models.BigIntegerField(default=0)
+
     class Meta:
         db_table = 'api_monthlyinvoice'
         constraints = [

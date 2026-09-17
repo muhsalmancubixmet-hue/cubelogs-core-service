@@ -32,7 +32,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
-from core.permissions import HasRequiredPermission, IsSuperAdminUser
+from core.permissions import HasRequiredPermission, IsSuperAdminUser, IsPlatformBillingAdmin
 from core.mixins import FilterMixinNew
 from subscribers.models import (
     SubscriptionPackage, SubscriberAccount, Wallet, WalletTransaction,
@@ -47,8 +47,13 @@ from subscribers.api.v1.serializers import (
 
 from users.models import Employee, PERMISSION_FLAGS
 from core.models import Organization, OrgSettings
+from core.pagination import StandardResultsSetPagination
 from company.models import Lead
 from users.api.v1.serializers import EmployeeSerializer
+from storage_billing.models import StorageEvent
+from storage_billing.services import StorageCalculationService
+from django.db.models import Sum, Count, Q, Value, OuterRef, Subquery, DateTimeField
+from django.db.models.functions import Coalesce
 
 
 # --------------------------------------------------------------------------------
@@ -77,10 +82,14 @@ class SubscriptionPackageViewSet(FilterMixinNew, viewsets.ModelViewSet):
         return super().create(request, *args, **kwargs)
 
     def perform_update(self, serializer):
-        serializer.save()
+        package = serializer.save()
+        from subscribers.tasks import cascade_package_update_task, dispatch_task_safely
+        dispatch_task_safely(cascade_package_update_task, package_id=package.id)
 
     def perform_create(self, serializer):
-        serializer.save()
+        package = serializer.save()
+        from subscribers.tasks import cascade_package_update_task, dispatch_task_safely
+        dispatch_task_safely(cascade_package_update_task, package_id=package.id)
 
 
 # --------------------------------------------------------------------------------
@@ -857,6 +866,8 @@ class WalletViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ['current_wallet']:
             return [permissions.IsAuthenticated()]
+        if self.action in ['bulk_adjust']:
+            return [permissions.IsAuthenticated(), IsSuperAdminUser()]
         self.required_permission = 'settings:billing'
         return [permissions.IsAuthenticated(), HasRequiredPermission()]
 
@@ -870,10 +881,19 @@ class WalletViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='current')
     def current_wallet(self, request):
         user = request.user
-        active_org = getattr(request, 'active_organization', None)
+        active_org = getattr(request, 'active_organization', None) or getattr(user, 'organization', None)
         active_mem = getattr(request, 'active_membership', None)
+        if not active_mem and user.is_authenticated and active_org:
+            from users.models import OrganizationMembership
+            active_mem = OrganizationMembership.objects.filter(
+                user=user,
+                organization=active_org,
+                is_active_in_org=True,
+                is_deleted=False
+            ).first()
 
-        if not active_org or not active_mem or not active_mem.is_active_in_org or active_mem.is_deleted:
+        is_super = getattr(user, 'isSuperAdmin', False)
+        if not active_org or (not active_mem and not is_super) or (active_mem and (not active_mem.is_active_in_org or active_mem.is_deleted)):
             return Response({'error': 'Active organization context and valid membership are required.'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -908,10 +928,20 @@ class WalletViewSet(viewsets.ModelViewSet):
         except Exception:
             return Response({'error': 'Enter a valid deposit amount.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        active_org = getattr(request, 'active_organization', None)
+        user = request.user
+        active_org = getattr(request, 'active_organization', None) or getattr(user, 'organization', None)
         active_mem = getattr(request, 'active_membership', None)
+        if not active_mem and user.is_authenticated and active_org:
+            from users.models import OrganizationMembership
+            active_mem = OrganizationMembership.objects.filter(
+                user=user,
+                organization=active_org,
+                is_active_in_org=True,
+                is_deleted=False
+            ).first()
 
-        if not active_org or not active_mem or not active_mem.is_active_in_org or active_mem.is_deleted:
+        is_super = getattr(user, 'isSuperAdmin', False)
+        if not active_org or (not active_mem and not is_super) or (active_mem and (not active_mem.is_active_in_org or active_mem.is_deleted)):
             return Response({'error': 'Active organization context and valid membership are required for wallet top-up.'}, status=status.HTTP_403_FORBIDDEN)
 
         wallet = Wallet.objects.filter(organization=active_org).order_by('id').first()
@@ -1035,7 +1065,7 @@ class WalletViewSet(viewsets.ModelViewSet):
 
         enable = bool(enable)
         user = request.user
-        active_org = getattr(request, 'active_organization', None)
+        active_org = getattr(request, 'active_organization', None) or getattr(user, 'organization', None)
         active_mem = getattr(request, 'active_membership', None)
         if not active_mem and user.is_authenticated and active_org:
             from users.models import OrganizationMembership
@@ -1046,7 +1076,8 @@ class WalletViewSet(viewsets.ModelViewSet):
                 is_deleted=False
             ).first()
 
-        if not active_org or (not active_mem and not (getattr(user, 'isSuperAdmin', False) and getattr(user, 'organization', None) is None)):
+        is_super = getattr(user, 'isSuperAdmin', False)
+        if not active_org or (not active_mem and not is_super) or (active_mem and (not active_mem.is_active_in_org or active_mem.is_deleted)):
             return Response({'error': 'Active organization context and valid membership are required.'}, status=status.HTTP_403_FORBIDDEN)
 
         org = active_org
@@ -1105,6 +1136,51 @@ class WalletViewSet(viewsets.ModelViewSet):
         bonus_val = bonus_val.quantize(Decimal('0.01'))
 
         return Response({'valid': True, 'code': coupon.code, 'value_type': coupon.value_type, 'value': str(coupon.value), 'computed_bonus': str(bonus_val), 'min_deposit_limit': str(coupon.min_deposit_limit), 'total_value': str(dep_amount_dec + bonus_val), 'net_payable': str(dep_amount_dec)}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='bulk-adjust')
+    def bulk_adjust(self, request):
+        """
+        Asynchronously processes bulk administrative wallet credits/debits.
+        Accepts:
+          adjustments: list of {organization_id, employee_id, amount, type: 'Credit'|'Debit', details}
+        """
+        adjustments = request.data.get('adjustments', [])
+        if not isinstance(adjustments, list) or not adjustments:
+            return Response({'error': 'A non-empty list of adjustments is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from subscribers.tasks import process_bulk_wallet_adjustments_task, dispatch_task_safely
+        task = dispatch_task_safely(
+            process_bulk_wallet_adjustments_task,
+            adjustments=adjustments,
+            initiated_by_id=request.user.id
+        )
+
+        return Response(
+            {
+                "task_id": str(task.id),
+                "status": getattr(task, 'status', 'PENDING'),
+                "message": f"Queued {len(adjustments)} wallet adjustment(s)."
+            },
+            status=status.HTTP_202_ACCEPTED
+        )
+
+    @action(detail=False, methods=['get'], url_path=r'tasks/(?P<task_id>[^/.]+)')
+    def task_status(self, request, task_id=None):
+        """
+        Polls status of asynchronous wallet/billing tasks.
+        """
+        from celery.result import AsyncResult
+        res = AsyncResult(task_id)
+        response_data = {
+            "task_id": task_id,
+            "status": res.status,
+            "ready": res.ready(),
+            "successful": res.successful() if res.ready() else False,
+            "result": res.result if res.ready() and not isinstance(res.result, Exception) else None,
+        }
+        if res.failed():
+            response_data["error"] = str(res.result)
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 # --------------------------------------------------------------------------------
@@ -1165,9 +1241,64 @@ class BackofficeOrganizationListView(APIView):
         return Response(org_list, status=status.HTTP_200_OK)
 
 
+# --------------------------------------------------------------------------------
+# BackofficeStorageOrganizationListView: Read-only platform oversight of tenant storage usage
+# --------------------------------------------------------------------------------
+class BackofficeStorageOrganizationListView(APIView):
+    permission_classes = [IsSuperAdminUser]
+    pagination_class = StandardResultsSetPagination
+
+    def get(self, request):
+        g_settings = GlobalBillingSettings.get_settings()
+        credit_size_bytes = g_settings.storage_credit_size_bytes
+
+        last_activity_sub = StorageEvent.objects.filter(
+            organization=OuterRef('pk')
+        ).order_by('-occurred_at').values('occurred_at')[:1]
+
+        queryset = Organization.objects.annotate(
+            active_bytes=Coalesce(
+                Sum('storage_files__size_bytes', filter=Q(storage_files__status='ACTIVE')),
+                Value(0)
+            ),
+            active_files=Count('storage_files', filter=Q(storage_files__status='ACTIVE')),
+            deleted_files=Count('storage_files', filter=Q(storage_files__status='DELETED')),
+            last_storage_activity_at=Subquery(last_activity_sub, output_field=DateTimeField())
+        ).order_by('id')
+
+        search_query = (request.query_params.get('search') or request.query_params.get('q') or '').strip()
+        if search_query:
+            queryset = queryset.filter(Q(name__icontains=search_query) | Q(subdomain__icontains=search_query))
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+
+        results = []
+        target_records = page if page is not None else queryset
+        for org in target_records:
+            billable_gb, current_credits = StorageCalculationService.calculate_storage_credits(
+                org.active_bytes, credit_size_bytes=credit_size_bytes
+            )
+            results.append({
+                "organization_id": org.id,
+                "organization_name": org.name,
+                "subdomain": org.subdomain,
+                "active_bytes": org.active_bytes,
+                "active_gb": str(billable_gb),
+                "current_credits": current_credits,
+                "active_files": org.active_files,
+                "deleted_files": org.deleted_files,
+                "last_storage_activity_at": org.last_storage_activity_at.isoformat() if org.last_storage_activity_at else None,
+            })
+
+        if page is not None:
+            return paginator.get_paginated_response(results)
+        return Response(results, status=status.HTTP_200_OK)
+
+
 # GlobalBillingSettingsViewSet: ViewSet managing global billing parameters (e.g. pricing, schedules, grace period).
 class GlobalBillingSettingsViewSet(viewsets.ViewSet):
-    permission_classes = [IsSuperAdminUser]
+    permission_classes = [IsPlatformBillingAdmin]
 
     def list(self, request):
         settings_instance, _ = GlobalBillingSettings.objects.get_or_create(id=1)

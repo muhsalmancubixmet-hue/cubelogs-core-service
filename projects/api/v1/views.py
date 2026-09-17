@@ -46,6 +46,7 @@ from projects.services.sprints import (
 )
 from projects.services.subtasks import create_subtask, toggle_subtask_completion
 from projects.services.comments import create_comment, create_attachment
+from projects.rich_text_utils import reconcile_entity_rich_text_attachments
 
 from projects.api.v1.serializers import (
     ProjectStatusOptionSerializer,
@@ -271,6 +272,11 @@ class ProjectViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
         )
 
         return Response(ProjectDetailSerializer(project).data, status=status.HTTP_201_CREATED)
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        project = serializer.save()
+        reconcile_entity_rich_text_attachments(project, user=self.request.user)
 
     def destroy(self, request, *args, **kwargs):
         project = self.get_object()
@@ -852,6 +858,11 @@ class ProjectEpicViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
         )
         return Response(ProjectEpicSerializer(epic).data, status=status.HTTP_201_CREATED)
 
+    @transaction.atomic
+    def perform_update(self, serializer):
+        epic = serializer.save()
+        reconcile_entity_rich_text_attachments(epic, user=self.request.user)
+
 
 # --------------------------------------------------------------------------------
 # ProjectSprintViewSet: Sprint lifecycle operations & burndown endpoint
@@ -1156,6 +1167,7 @@ class ProjectStoryViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
                 status=status_obj,
                 user=request.user,
                 member_ids=request.data.get('members') or request.data.get('member_ids'),
+                draft_token=request.data.get('draft_token'),
             )
             return Response(ProjectStorySerializer(story).data, status=status.HTTP_201_CREATED)
         except ValidationError as e:
@@ -1188,8 +1200,10 @@ class ProjectStoryViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
                 return Response({'detail': 'Permission denied: Developers can move assigned cards only.'}, status=status.HTTP_403_FORBIDDEN)
         return super().update(request, *args, **kwargs)
 
+    @transaction.atomic
     def perform_update(self, serializer):
         story = serializer.save()
+        reconcile_entity_rich_text_attachments(story, user=self.request.user)
         member_ids = self.request.data.get('members') or self.request.data.get('member_ids')
         if member_ids is not None and isinstance(member_ids, list):
             from projects.models import ProjectMember, ProjectStoryMember
@@ -1342,22 +1356,30 @@ class ProjectTaskViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
                     return Response({'error': 'Status option not found or invalid scope.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            task = create_task(
-                story=story,
-                title=request.data.get('title'),
-                description=request.data.get('description'),
-                assigned_to=assigned_to,
-                priority=request.data.get('priority', 'Medium'),
-                status=status_obj,
-                estimated_hours=request.data.get('estimated_hours', 0.0),
-                start_date=request.data.get('start_date'),
-                due_date=request.data.get('due_date'),
-                user=request.user,
-            )
-            draft_token = request.data.get('draft_token')
-            if draft_token:
-                from projects.models import ProjectAttachment
-                ProjectAttachment.objects.filter(draft_token=draft_token, uploaded_by=request.user).update(task=task, draft_token=None)
+            with transaction.atomic():
+                task = create_task(
+                    story=story,
+                    title=request.data.get('title'),
+                    description=request.data.get('description'),
+                    assigned_to=assigned_to,
+                    priority=request.data.get('priority', 'Medium'),
+                    status=status_obj,
+                    estimated_hours=request.data.get('estimated_hours', 0.0),
+                    start_date=request.data.get('start_date'),
+                    due_date=request.data.get('due_date'),
+                    user=request.user,
+                )
+                draft_token = request.data.get('draft_token')
+                if draft_token:
+                    from projects.models import ProjectAttachment
+                    ProjectAttachment.objects.filter(
+                        draft_token=draft_token,
+                        uploaded_by=request.user,
+                        company=story.project.company,
+                        is_temporary=True
+                    ).update(task=task, draft_token=None, is_temporary=False, expires_at=None)
+                if request.data.get('description'):
+                    reconcile_entity_rich_text_attachments(task, user=request.user)
             return Response(ProjectTaskSerializer(task).data, status=status.HTTP_201_CREATED)
         except ValidationError as e:
             err_dict = e.message_dict if hasattr(e, 'message_dict') else {'detail': e.messages}
@@ -1383,6 +1405,11 @@ class ProjectTaskViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
         if not self._check_task_update_permission(request, task):
             return Response({'detail': 'Permission denied: You can only update tasks assigned to you.'}, status=status.HTTP_403_FORBIDDEN)
         return super().partial_update(request, *args, **kwargs)
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        task = serializer.save()
+        reconcile_entity_rich_text_attachments(task, user=self.request.user)
 
     @action(detail=True, methods=['patch'], url_path='status')
     def status_update(self, request, pk=None):
@@ -1595,18 +1622,22 @@ class ProjectCommentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
         if not project_access_ok:
             return Response({'detail': 'Permission denied: no access to project.'}, status=status.HTTP_403_FORBIDDEN)
 
-        comment = create_comment(
-            user=request.user,
-            comment_text=serializer.validated_data.get('comment', ''),
-            epic=epic,
-            story=story,
-            task=task,
-            subtask=subtask,
-            attachment_ids=attachment_ids,
-            draft_token=draft_token,
-            client_message_id=client_message_id,
-        )
-        return Response(ProjectCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+        try:
+            comment = create_comment(
+                user=request.user,
+                comment_text=serializer.validated_data.get('comment', ''),
+                epic=epic,
+                story=story,
+                task=task,
+                subtask=subtask,
+                attachment_ids=attachment_ids,
+                draft_token=draft_token,
+                client_message_id=client_message_id,
+            )
+            return Response(ProjectCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
+        except ValidationError as e:
+            msg = e.messages[0] if hasattr(e, 'messages') and e.messages else str(e)
+            return Response({'detail': msg}, status=status.HTTP_400_BAD_REQUEST)
 
     def perform_update(self, serializer):
         comment = serializer.save()
@@ -1650,6 +1681,7 @@ class ProjectCommentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
 
 
 class ProjectAttachmentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     required_plan_feature = 'is_project_enabled'
     throttle_scope = 'uploads'
     permission_classes_by_action = {
@@ -1723,6 +1755,10 @@ class ProjectAttachmentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
         return qs
 
     def create(self, request, *args, **kwargs):
+        active_org = getattr(request, 'active_organization', None)
+        if not active_org:
+            return Response({'detail': 'Active organization required.'}, status=status.HTTP_400_BAD_REQUEST)
+
         file_obj = request.FILES.get('file')
         if not file_obj:
             return Response({'detail': 'No file uploaded.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1751,12 +1787,16 @@ class ProjectAttachmentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        project = Project.objects.filter(id=project_id).first() if project_id else None
-        epic = ProjectEpic.objects.filter(id=epic_id).first() if epic_id else None
-        story = ProjectStory.objects.filter(id=story_id).first() if story_id else None
-        task = ProjectTask.objects.filter(id=task_id).first() if task_id else None
+        project = Project.objects.filter(id=project_id, company=active_org).first() if project_id else None
+        epic = ProjectEpic.objects.filter(id=epic_id, company=active_org).first() if epic_id else None
+        story = ProjectStory.objects.filter(id=story_id, project__company=active_org).first() if story_id else None
+        task = ProjectTask.objects.filter(id=task_id, story__project__company=active_org).first() if task_id else None
 
         if persisted_count == 1:
+            target_found = any([project, epic, story, task])
+            if not target_found:
+                return Response({'detail': 'Permission denied: no access to target entity.'}, status=status.HTTP_403_FORBIDDEN)
+
             permitted_projects = projects_for_user(request.user)
             project_access_ok = False
             if project and project in permitted_projects:
@@ -1782,11 +1822,16 @@ class ProjectAttachmentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
                 task=task,
                 draft_token=draft_token if has_draft else None,
                 is_inline=is_inline,
+                organization=active_org,
             )
             return Response(ProjectAttachmentSerializer(attachment).data, status=status.HTTP_201_CREATED)
         except ValidationError as e:
             err_dict = e.message_dict if hasattr(e, 'message_dict') else {'detail': e.messages}
             return Response(err_dict, status=status.HTTP_400_BAD_REQUEST)
+
+    def perform_destroy(self, instance):
+        instance._storage_deleted_by = self.request.user
+        instance.delete()
 
     @action(detail=True, methods=['get'])
     def download(self, request, pk=None):

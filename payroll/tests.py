@@ -267,12 +267,12 @@ class PayrollPhase5Tests(TestCase):
         self.assertEqual(v2.base_net_salary, Decimal('4000.00'))
 
         # Resolve for March 2026 -> v1
-        resolved_mar = get_employee_salary_structure(self.emp_a, date(2026, 3, 15))
+        resolved_mar = get_employee_salary_structure(self.emp_a, self.org_a, date(2026, 3, 15))
         self.assertEqual(resolved_mar.id, v1.id)
         self.assertEqual(resolved_mar.base_net_salary, Decimal('3000.00'))
 
         # Resolve for August 2026 -> v2
-        resolved_aug = get_employee_salary_structure(self.emp_a, date(2026, 8, 1))
+        resolved_aug = get_employee_salary_structure(self.emp_a, self.org_a, date(2026, 8, 1))
         self.assertEqual(resolved_aug.id, v2.id)
         self.assertEqual(resolved_aug.base_net_salary, Decimal('4000.00'))
 
@@ -826,7 +826,7 @@ class PayrollPhase6Tests(TestCase):
         # attendance_deduction = 1 * 130.4348 = 130.43
         # earned_gross = 3000 - 130.43 + 1000 = 3869.57
         # net_payable = 3869.57 - 100 (insurance) = 3769.57
-        salary_struct = get_employee_salary_structure(self.emp_1, date(2026, 7, 1))
+        salary_struct = get_employee_salary_structure(self.emp_1, self.org_a, date(2026, 7, 1))
         from payroll.services import calculate_employee_payroll
         calc = calculate_employee_payroll(
             employee=self.emp_1,
@@ -2631,8 +2631,8 @@ class MonthlyAndDailyWageCompensationTestCase(TestCase):
         from payroll.services import get_bulk_employee_salary_structures, get_employee_salary_structure
         target_dt = datetime_date(2026, 7, 1)
 
-        single_struct_monthly = get_employee_salary_structure(self.emp_monthly, target_dt)
-        single_struct_daily = get_employee_salary_structure(self.emp_daily, target_dt)
+        single_struct_monthly = get_employee_salary_structure(self.emp_monthly, self.org, target_dt)
+        single_struct_daily = get_employee_salary_structure(self.emp_daily, self.org, target_dt)
 
         bulk_map = get_bulk_employee_salary_structures(self.org, target_dt)
 

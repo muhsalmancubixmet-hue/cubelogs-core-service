@@ -38,6 +38,13 @@
             <td>₹{{ project_price|floatformat:2 }} INR</td>
         </tr>
         {% endif %}
+        {% if storage_charge > 0 %}
+        <tr>
+            <td><strong>Storage & Media — {{ storage_usage_month }}</strong></td>
+            <td>{{ storage_finalized_days }} finalized daily usage snapshots</td>
+            <td>₹{{ storage_charge|floatformat:2 }} INR</td>
+        </tr>
+        {% endif %}
         {% if tax_amount > 0 or base_price > 0 %}
         <tr>
             <td colspan="2" style="text-align: right;"><strong>Subtotal</strong></td>

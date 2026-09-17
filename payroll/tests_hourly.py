@@ -196,8 +196,8 @@ class HourlyCompensationTestCase(TestCase):
             created_by=self.admin_user
         )
         self.assertEqual(EmployeeSalaryStructure.objects.filter(employee=self.emp).count(), 2)
-        resolved_june = get_employee_salary_structure(self.emp, date(2026, 6, 1))
-        resolved_july = get_employee_salary_structure(self.emp, date(2026, 7, 1))
+        resolved_june = get_employee_salary_structure(self.emp, self.org, date(2026, 6, 1))
+        resolved_july = get_employee_salary_structure(self.emp, self.org, date(2026, 7, 1))
         self.assertEqual(resolved_june.hourly_rate, Decimal("200.00"))
         self.assertEqual(resolved_july.hourly_rate, Decimal("250.00"))
 

@@ -28,6 +28,27 @@ class TenantContext:
         return request._cached_active_membership
 
     @staticmethod
+    def _extract_header_org_id(request):
+        if not request:
+            return None
+        header_val = None
+        if hasattr(request, 'headers'):
+            header_val = request.headers.get('X-Organization-ID') or request.headers.get('x-organization-id')
+        if not header_val and hasattr(request, 'META'):
+            header_val = request.META.get('HTTP_X_ORGANIZATION_ID')
+        if not header_val and hasattr(request, 'query_params'):
+            header_val = request.query_params.get('organization') or request.query_params.get('organization_id')
+        elif not header_val and hasattr(request, 'GET'):
+            header_val = request.GET.get('organization') or request.GET.get('organization_id')
+
+        if header_val is not None:
+            try:
+                return int(header_val)
+            except (ValueError, TypeError):
+                return str(header_val).strip() or None
+        return None
+
+    @staticmethod
     def get_active_organization(request):
         """
         Resolves the active Organization for the request.
@@ -38,8 +59,13 @@ class TenantContext:
             if membership:
                 request._cached_active_organization = membership.organization
             elif getattr(request, 'user', None) and request.user.is_authenticated:
-                # System superadmin or global fallback
-                request._cached_active_organization = getattr(request.user, 'organization', None)
+                user = request.user
+                header_org_id = TenantContext._extract_header_org_id(request)
+                if header_org_id and getattr(user, 'isSuperAdmin', False) and getattr(user, 'organization', None) is None:
+                    from core.models import Organization
+                    request._cached_active_organization = Organization.objects.filter(id=header_org_id).first()
+                else:
+                    request._cached_active_organization = getattr(user, 'organization', None)
             else:
                 request._cached_active_organization = None
         return request._cached_active_organization
@@ -64,11 +90,41 @@ class TenantContext:
         if not user or not user.is_authenticated:
             return None
 
+        from users.models import OrganizationMembership
+
+        header_org_id = TenantContext._extract_header_org_id(request)
+
+        # Handle explicit organization request header
+        if header_org_id:
+            # Check if user has an active membership in the requested organization
+            mem = OrganizationMembership.objects.filter(
+                organization_id=header_org_id,
+                user=user,
+                is_active_in_org=True,
+                is_deleted=False
+            ).select_related('organization', 'role').first()
+            if mem:
+                return mem
+
+            # Platform superadmin without tenant organization bypasses tenant membership requirements
+            if getattr(user, 'isSuperAdmin', False) and getattr(user, 'organization', None) is None:
+                return None
+
+            # Fallback self-healing if user's legacy organization matches header
+            if getattr(user, 'organization_id', None) == header_org_id:
+                from users.api.v1.services import UserService
+                return UserService.sync_employee_shadow_membership(user)
+
+            logger.warning(
+                "Tenant authorization failure: User %s passed X-Organization-ID %s without active membership.",
+                getattr(user, 'email', str(user)),
+                header_org_id
+            )
+            return None
+
         # System superadmin without tenant organization bypasses tenant membership requirements
         if getattr(user, 'isSuperAdmin', False) and getattr(user, 'organization', None) is None:
             return None
-
-        from users.models import OrganizationMembership
 
         # JWT Claim Resolution (if token auth was used)
         token_mem_id = None
@@ -114,6 +170,11 @@ class TenantContext:
             organization=current_org,
             is_active_in_org=True
         ).select_related('organization', 'role').first()
+
+        if not membership:
+            # Self-healing fallback for legacy users
+            from users.api.v1.services import UserService
+            membership = UserService.sync_employee_shadow_membership(user)
 
         if not membership:
             logger.warning(

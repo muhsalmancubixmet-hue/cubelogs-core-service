@@ -2010,7 +2010,19 @@ class BillingPhaseGTest(APITestCase):
         self.assertEqual(g_current.attendance_module_price, Decimal('99.00'))
 
         # 3. Canonical update via GlobalBillingSettingsViewSet cascades one-way to SubscriptionPackage
-        self.client.force_authenticate(user=self.admin)
+        # Must use legitimate platform backoffice operator (organization=None), not tenant SuperAdmin
+        import uuid
+        platform_billing_admin = Employee.objects.create_user(
+            email=f"platform-billing-{uuid.uuid4().hex[:6]}@cubelogs.com",
+            password='testpassword123',
+            first_name='Platform',
+            last_name='BillingAdmin',
+            organization=None,
+            isSuperAdmin=True,
+            is_staff=True,
+            permissions=['billing_settings']
+        )
+        self.client.force_authenticate(user=platform_billing_admin)
         res = self.client.post('/api/backoffice/billing-settings/', {
             'attendance_module_price': 120.00,
             'tasks_module_price': 65.00
@@ -2023,6 +2035,136 @@ class BillingPhaseGTest(APITestCase):
 
         pkg.refresh_from_db()
         self.assertEqual(pkg.price, Decimal('120.00'))
+
+    def test_global_billing_settings_tenant_superadmin_forbidden(self):
+        """
+        1. Tenant SuperAdmin (organization != None) is strictly forbidden from
+        reading or updating GlobalBillingSettings (403 Forbidden).
+        """
+        # self.admin is a tenant SuperAdmin with organization=self.org_a
+        self.client.force_authenticate(user=self.admin)
+
+        # GET must be denied
+        res_get = self.client.get('/api/backoffice/billing-settings/')
+        self.assertEqual(res_get.status_code, 403)
+
+        # POST / update must be denied
+        res_post = self.client.post('/api/backoffice/billing-settings/', {
+            'employee_seat_price': 1.00,
+            'monthly_data_rent': 0.00,
+            'storage_credit_monthly_price': 0.00,
+        }, format='json')
+        self.assertEqual(res_post.status_code, 403)
+
+        # Ensure no GlobalBillingSettings values were altered
+        g_settings = GlobalBillingSettings.get_settings()
+        self.assertNotEqual(g_settings.employee_seat_price, Decimal('1.00'))
+
+    def test_global_billing_settings_platform_operator_with_permission_allowed(self):
+        """
+        2. Platform backoffice operator (organization=None) with 'billing_settings'
+        permission can GET and POST GlobalBillingSettings (200 OK).
+        """
+        import uuid
+        operator = Employee.objects.create_user(
+            email=f"operator-billing-{uuid.uuid4().hex[:6]}@cubelogs.com",
+            password='testpassword123',
+            first_name='Operator',
+            last_name='Billing',
+            organization=None,
+            isSuperAdmin=True,
+            permissions=['billing_settings']
+        )
+        self.client.force_authenticate(user=operator)
+
+        # GET allowed
+        res_get = self.client.get('/api/backoffice/billing-settings/')
+        self.assertEqual(res_get.status_code, 200)
+        self.assertIn('employee_seat_price', res_get.data)
+
+        # POST allowed
+        res_post = self.client.post('/api/backoffice/billing-settings/', {
+            'employee_seat_price': 55.00
+        }, format='json')
+        self.assertEqual(res_post.status_code, 200)
+
+        g_settings = GlobalBillingSettings.get_settings()
+        self.assertEqual(g_settings.employee_seat_price, Decimal('55.00'))
+
+    def test_global_billing_settings_platform_operator_without_permission_forbidden(self):
+        """
+        3. Platform backoffice operator (organization=None) WITHOUT 'billing_settings'
+        permission is denied (403 Forbidden).
+        """
+        import uuid
+        operator_other = Employee.objects.create_user(
+            email=f"operator-leads-{uuid.uuid4().hex[:6]}@cubelogs.com",
+            password='testpassword123',
+            first_name='Operator',
+            last_name='Leads',
+            organization=None,
+            isSuperAdmin=True,
+            permissions=['leads', 'cms']
+        )
+        self.client.force_authenticate(user=operator_other)
+
+        res_get = self.client.get('/api/backoffice/billing-settings/')
+        self.assertEqual(res_get.status_code, 403)
+
+        res_post = self.client.post('/api/backoffice/billing-settings/', {
+            'employee_seat_price': 10.00
+        }, format='json')
+        self.assertEqual(res_post.status_code, 403)
+
+    def test_global_billing_settings_root_superuser_allowed(self):
+        """
+        4. Django root superuser (is_superuser=True) can GET and POST GlobalBillingSettings (200 OK).
+        """
+        import uuid
+        root_admin = Employee.objects.create_user(
+            email=f"root-admin-{uuid.uuid4().hex[:6]}@cubelogs.com",
+            password='testpassword123',
+            first_name='Root',
+            last_name='Admin',
+            isSuperAdmin=True,
+            is_superuser=True,
+            is_staff=True
+        )
+        self.client.force_authenticate(user=root_admin)
+
+        res_get = self.client.get('/api/backoffice/billing-settings/')
+        self.assertEqual(res_get.status_code, 200)
+
+        res_post = self.client.post('/api/backoffice/billing-settings/', {
+            'employee_seat_price': 60.00
+        }, format='json')
+        self.assertEqual(res_post.status_code, 200)
+
+    def test_global_billing_settings_tenant_isolation_unauthorized_modification_blocked(self):
+        """
+        6. Verify tenant isolation: tenant admin cannot alter employee_seat_price,
+        module pricing, storage pricing, or any other global configuration value.
+        """
+        g_before = GlobalBillingSettings.get_settings()
+        original_seat = g_before.employee_seat_price
+        original_rent = g_before.monthly_data_rent
+        original_storage_price = g_before.storage_credit_monthly_price
+
+        # Tenant admin B attempts to overwrite global pricing
+        self.client.force_authenticate(user=self.admin_b)
+        res = self.client.post('/api/backoffice/billing-settings/', {
+            'employee_seat_price': 0.01,
+            'monthly_data_rent': 0.01,
+            'storage_credit_monthly_price': 0.01,
+            'storage_billing_enabled': True
+        }, format='json')
+        self.assertEqual(res.status_code, 403)
+
+        # Confirm DB state is unmodified
+        g_after = GlobalBillingSettings.get_settings()
+        self.assertEqual(g_after.employee_seat_price, original_seat)
+        self.assertEqual(g_after.monthly_data_rent, original_rent)
+        self.assertEqual(g_after.storage_credit_monthly_price, original_storage_price)
 
     def test_module_toggle_no_immediate_debit_and_no_refund(self):
         from rest_framework.test import APIRequestFactory, force_authenticate
@@ -2686,6 +2828,98 @@ class BillingPhaseHTest(TestCase):
         )
         self.assertFalse(credited2)
         self.assertEqual(w2.balance, Decimal('250.00'))
+
+
+class PasswordResetFlowTestCase(APITestCase):
+    def setUp(self):
+        self.user = Employee.objects.create_user(
+            email="reset_target@example.com",
+            password="InitialPassword123!",
+            first_name="Reset",
+            last_name="User",
+        )
+        self.client = APIClient()
+
+    @patch("core.tasks.send_email_task.delay")
+    def test_existing_email_returns_generic_200_and_enqueues_email(self, mock_email):
+        res = self.client.post("/api/auth/password-reset/request/", {"email": "reset_target@example.com"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["message"], "Password reset link has been sent to your email.")
+        mock_email.assert_called_once()
+
+    @patch("core.tasks.send_email_task.delay")
+    def test_unknown_email_returns_same_generic_200_without_enqueuing(self, mock_email):
+        res = self.client.post("/api/auth/password-reset/request/", {"email": "nonexistent_user@example.com"}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["message"], "Password reset link has been sent to your email.")
+        mock_email.assert_not_called()
+
+    @patch("core.tasks.send_email_task.delay")
+    def test_mixed_case_and_whitespace_email_works(self, mock_email):
+        res = self.client.post("/api/auth/password-reset/request/", {"email": "  ReSeT_TaRgEt@Example.COM  "}, format="json")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data["message"], "Password reset link has been sent to your email.")
+        mock_email.assert_called_once()
+
+    def test_expired_token_rejected(self):
+        import hashlib
+        import time
+        from django.core.signing import TimestampSigner
+        signer = TimestampSigner(salt='password-reset')
+        pw_fp = hashlib.sha256(self.user.password.encode('utf-8')).hexdigest()[:16]
+        token = signer.sign(f"{self.user.id}:{pw_fp}")
+
+        with patch.object(time, 'time', return_value=time.time() + 2000):
+            res_val = self.client.post("/api/auth/password-reset/validate/", {"token": token}, format="json")
+            self.assertEqual(res_val.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertIn("expired", res_val.data["error"])
+
+            res_conf = self.client.post("/api/auth/password-reset/confirm/", {
+                "token": token,
+                "password": "NewSecretPassword123!",
+                "passwordConfirm": "NewSecretPassword123!"
+            }, format="json")
+            self.assertEqual(res_conf.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertIn("expired", res_conf.data["error"])
+
+    def test_valid_token_confirms_and_reused_token_rejected(self):
+        import hashlib
+        from django.core.signing import TimestampSigner
+        signer = TimestampSigner(salt='password-reset')
+        pw_fp = hashlib.sha256(self.user.password.encode('utf-8')).hexdigest()[:16]
+        token = signer.sign(f"{self.user.id}:{pw_fp}")
+
+        # 1. Valid token validate succeeds
+        res_val = self.client.post("/api/auth/password-reset/validate/", {"token": token}, format="json")
+        self.assertEqual(res_val.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_val.data["message"], "Token is valid.")
+
+        # 2. Valid token confirm succeeds
+        res_conf = self.client.post("/api/auth/password-reset/confirm/", {
+            "token": token,
+            "password": "NewSecretPassword123!",
+            "passwordConfirm": "NewSecretPassword123!"
+        }, format="json")
+        self.assertEqual(res_conf.status_code, status.HTTP_200_OK)
+        self.assertEqual(res_conf.data["message"], "Password has been successfully updated.")
+
+        # Verify password changed
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewSecretPassword123!"))
+
+        # 3. Reused token validate fails
+        res_val_reused = self.client.post("/api/auth/password-reset/validate/", {"token": token}, format="json")
+        self.assertEqual(res_val_reused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already been used or is invalid", res_val_reused.data["error"])
+
+        # 4. Reused token confirm fails
+        res_conf_reused = self.client.post("/api/auth/password-reset/confirm/", {
+            "token": token,
+            "password": "AnotherPassword456!",
+            "passwordConfirm": "AnotherPassword456!"
+        }, format="json")
+        self.assertEqual(res_conf_reused.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already been used or is invalid", res_conf_reused.data["error"])
 
 
 

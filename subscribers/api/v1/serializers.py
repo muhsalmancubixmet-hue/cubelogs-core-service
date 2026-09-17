@@ -251,7 +251,29 @@ class GlobalBillingSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = GlobalBillingSettings
-        fields = '__all__'
+        fields = [
+            'id',
+            'monthly_subscription_price',
+            'monthly_data_rent',
+            'attendance_module_price',
+            'tasks_module_price',
+            'employee_seat_price',
+            'grace_period_days',
+            'reminder_email_days_before',
+            'auto_deduction_day',
+            'invoice_generation_day',
+            'currency',
+            'tax_percentage',
+            'storage_credit_size_bytes',
+            'storage_credit_monthly_price',
+            'storage_billing_enabled',
+            'attendance_daily_price',
+            'tasks_daily_price',
+            'days_in_current_month',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_days_in_current_month(self, obj):
         import calendar
@@ -280,3 +302,17 @@ class GlobalBillingSettingsSerializer(serializers.ModelSerializer):
             return "0.00"
         daily = Decimal(str(obj.tasks_module_price)) / Decimal(str(total_days))
         return str(daily.quantize(Decimal('0.01')))
+
+    def validate_storage_credit_size_bytes(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError(
+                "Storage credit size must be greater than 0."
+            )
+        return value
+
+    def validate_storage_credit_monthly_price(self, value):
+        if value is None or value < 0:
+            raise serializers.ValidationError(
+                "Storage credit monthly price must be greater than or equal to 0."
+            )
+        return value

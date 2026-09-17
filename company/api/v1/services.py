@@ -3,7 +3,8 @@
 # --------------------------------------------------------------------------------
 
 import re
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import date, timedelta, datetime
 import logging
 from django.utils import timezone
 from django.conf import settings
@@ -26,6 +27,112 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 class BillingService:
+    @staticmethod
+    def get_previous_calendar_month(billing_month):
+        """
+        Given a billing_month date (typically 1st of month),
+        returns (first_day_of_prev_month, last_day_of_prev_month, days_in_prev_month).
+        Correctly rolls back across year boundaries (Jan -> Dec previous year).
+        """
+        if hasattr(billing_month, 'date'):
+            billing_month = billing_month.date()
+        first_of_billing = billing_month.replace(day=1)
+        last_of_prev = first_of_billing - timedelta(days=1)
+        first_of_prev = last_of_prev.replace(day=1)
+        days_in_prev = last_of_prev.day
+        return first_of_prev, last_of_prev, days_in_prev
+
+    @staticmethod
+    def get_previous_month_storage_billing(org, billing_month):
+        """
+        Computes storage billing metrics for the previous calendar month.
+        Storage is billed in arrears: invoice for month M bills finalized usage of M-1.
+
+        Rules:
+        - storage_billing_enabled must be True
+        - usage month must be >= STORAGE_FIRST_BILLABLE_USAGE_MONTH (Oct 1, 2026; Sep is free grace period)
+        - Every calendar day in the usage month must have an is_finalized=True row
+        - Exact 12-decimal daily storage_charge values are summed and quantized ONCE to ₹0.01
+
+        Returns dict:
+        {
+            'storage_charge': Decimal('0.00'),
+            'storage_usage_month': first_of_prev,
+            'storage_finalized_days': int,
+            'storage_billable_bytes_days': int,
+            'storage_credit_days': int,
+            'is_billable': bool,
+            'is_complete': bool,
+        }
+        """
+        from storage_billing.models import StorageDailyUsage
+
+        first_of_prev, last_of_prev, days_in_prev = BillingService.get_previous_calendar_month(billing_month)
+
+        finalized_rows = list(
+            StorageDailyUsage.objects.filter(
+                organization=org,
+                usage_date__gte=first_of_prev,
+                usage_date__lte=last_of_prev,
+                is_finalized=True
+            ).order_by('usage_date')
+        )
+        finalized_count = len(finalized_rows)
+        is_complete = (finalized_count == days_in_prev)
+
+        total_bytes_days = 0
+        total_credit_days = 0
+        sum_charge_raw = Decimal('0.00')
+
+        for row in finalized_rows:
+            sum_charge_raw += (row.storage_charge or Decimal('0.00'))
+            total_bytes_days += (row.billable_bytes or 0)
+            total_credit_days += (row.storage_credits or 0)
+
+        # 1. Check GlobalBillingSettings master toggle
+        g_settings = GlobalBillingSettings.get_settings()
+        billing_enabled = bool(getattr(g_settings, 'storage_billing_enabled', False))
+
+        # 2. Check Go-Live Grace Period Policy (September 2026 is metered but free)
+        first_billable_setting = getattr(
+            settings, 'STORAGE_BILLING_FIRST_USAGE_MONTH',
+            getattr(settings, 'STORAGE_FIRST_BILLABLE_USAGE_MONTH', '2026-10-01')
+        )
+        if isinstance(first_billable_setting, str):
+            first_billable_month = datetime.strptime(first_billable_setting, '%Y-%m-%d').date()
+        elif isinstance(first_billable_setting, date):
+            first_billable_month = first_billable_setting
+        else:
+            first_billable_month = date(2026, 10, 1)
+
+        is_billable_month = (first_of_prev >= first_billable_month)
+
+        # 3. Determine charge
+        if not billing_enabled:
+            storage_charge = Decimal('0.00')
+        elif not is_billable_month:
+            # Grace period (e.g. September 2026 usage on October 2026 invoice)
+            storage_charge = Decimal('0.00')
+        elif not is_complete:
+            # Missing or unfinalized days in the month
+            logger.warning(
+                "INCOMPLETE_STORAGE_MONTH_SKIPPED: organization_id=%s, usage_month=%s, finalized_count=%s, expected_days=%s",
+                org.id, first_of_prev.strftime('%Y-%m'), finalized_count, days_in_prev
+            )
+            storage_charge = Decimal('0.00')
+        else:
+            # Complete, billable, and enabled: sum exact 12-decimal daily charges then quantize ONCE
+            storage_charge = sum_charge_raw.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        return {
+            'storage_charge': storage_charge,
+            'storage_usage_month': first_of_prev,
+            'storage_finalized_days': finalized_count,
+            'storage_billable_bytes_days': total_bytes_days,
+            'storage_credit_days': total_credit_days,
+            'is_billable': is_billable_month,
+            'is_complete': is_complete,
+        }
     @staticmethod
     def get_billable_memberships_qs(org):
         from users.models import OrganizationMembership

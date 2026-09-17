@@ -474,3 +474,41 @@ class ProductionBillingWorkflowTestCase(TestCase):
         self.wallet_a.refresh_from_db()
         self.assertEqual(self.wallet_a.balance, Decimal('250.00'))
 
+    def test_wallet_and_module_toggle_tenant_context_resolution(self):
+        """
+        AUDIT VERIFICATION:
+        1. Accessing /wallet/current/ with active org context returns 200 and wallet details.
+        2. Accessing /wallet/toggle-module/ with active org context succeeds.
+        3. Accessing with X-Organization-ID header seamlessly resolves active tenant context.
+        """
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(user=self.user_admin)
+
+        # 1. With X-Organization-ID header
+        client.defaults['HTTP_X_ORGANIZATION_ID'] = str(self.org_a.id)
+        res_wallet = client.get('/api/v1/wallet/current/')
+        self.assertEqual(res_wallet.status_code, 200)
+        self.assertIn('balance', res_wallet.data)
+
+        # 2. Toggle module with X-Organization-ID header
+        res_toggle = client.post('/api/v1/wallet/toggle-module/', {'module': 'attendance', 'enable': True}, format='json')
+        self.assertEqual(res_toggle.status_code, 200)
+        self.settings_a.refresh_from_db()
+        self.assertTrue(self.settings_a.is_attendance_enabled)
+
+        # 3. Superadmin without organization bound using X-Organization-ID header
+        super_admin_unbound = Employee.objects.create(
+            username="platform_superadmin",
+            email="platform_super@cubelogs.com",
+            isSuperAdmin=True,
+            is_active=True,
+            organization=None
+        )
+        client.force_authenticate(user=super_admin_unbound)
+        client.defaults['HTTP_X_ORGANIZATION_ID'] = str(self.org_b.id)
+        res_wallet_super = client.get('/api/v1/wallet/current/')
+        self.assertEqual(res_wallet_super.status_code, 200)
+        self.assertIn('balance', res_wallet_super.data)
+
+

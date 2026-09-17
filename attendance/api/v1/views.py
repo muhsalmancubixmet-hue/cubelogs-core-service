@@ -701,8 +701,8 @@ class HolidayViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetM
     def list(self, request, *args, **kwargs):
         import django.utils.timezone as dj_timezone
 
-        # Get static holidays
-        static_qs = self.get_queryset()
+        # Get static holidays filtered by tenant and query params
+        static_qs = self.filter_queryset(self.get_queryset())
 
         current_year = dj_timezone.now().year
         try:
@@ -713,9 +713,10 @@ class HolidayViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetM
             end_year = current_year + 1
 
         user = request.user
+        active_org = getattr(request, 'active_organization', None) or (getattr(user, 'organization', None) if user and user.is_authenticated else None)
         dynamic_holidays = []
-        if user.is_authenticated and user.organization:
-            dynamic_holidays = calculate_recurring_holidays(user.organization, start_year, end_year)
+        if active_org:
+            dynamic_holidays = calculate_recurring_holidays(active_org, start_year, end_year)
 
         # Merge: static holidays take precedence over dynamic ones on the same date
         merged = {}
@@ -733,27 +734,27 @@ class HolidayViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedViewSetM
 
     def perform_create(self, serializer):
         user = self.request.user
-        org = user.organization if user.is_authenticated else None
+        active_org = getattr(self.request, 'active_organization', None) or (getattr(user, 'organization', None) if user and user.is_authenticated else None)
         target_date = serializer.validated_data.get('date')
-        if is_date_locked(org, target_date):
+        if is_date_locked(active_org, target_date):
             from rest_framework.exceptions import ValidationError
             raise ValidationError({'detail': 'Holidays cannot be created for a finalized attendance period.'})
         super().perform_create(serializer)
 
     def perform_update(self, serializer):
         user = self.request.user
-        org = user.organization if user.is_authenticated else None
+        active_org = getattr(self.request, 'active_organization', None) or (getattr(user, 'organization', None) if user and user.is_authenticated else None)
         orig_date = serializer.instance.date
         new_date = serializer.validated_data.get('date', orig_date)
-        if is_date_locked(org, orig_date) or is_date_locked(org, new_date):
+        if is_date_locked(active_org, orig_date) or is_date_locked(active_org, new_date):
             from rest_framework.exceptions import ValidationError
             raise ValidationError({'detail': 'Holidays cannot be modified for a finalized attendance period.'})
         super().perform_update(serializer)
 
     def perform_destroy(self, instance):
         user = self.request.user
-        org = user.organization if user.is_authenticated else None
-        if is_date_locked(org, instance.date):
+        active_org = getattr(self.request, 'active_organization', None) or (getattr(user, 'organization', None) if user and user.is_authenticated else None)
+        if is_date_locked(active_org, instance.date):
             from rest_framework.exceptions import ValidationError
             raise ValidationError({'detail': 'Holidays cannot be deleted for a finalized attendance period.'})
         super().perform_destroy(instance)
@@ -768,16 +769,26 @@ class HolidaySettingsView(APIView):
     required_plan_feature = 'is_attendance_enabled'
     required_permission = 'holidays:manage'
 
+    def _get_active_org(self, request):
+        from core.tenant import TenantContext
+        try:
+            active_org = TenantContext.get_active_organization(request)
+        except Exception:
+            active_org = getattr(request, 'active_organization', None)
+        if not active_org and request.user and request.user.is_authenticated:
+            active_org = getattr(request.user, 'organization', None)
+        return active_org
+
     def get(self, request):
-        user = request.user
-        if not user.organization:
+        active_org = self._get_active_org(request)
+        if not active_org:
             return Response({"error": "User does not belong to an organization."}, status=status.HTTP_400_BAD_REQUEST)
 
-        settings = user.organization.settings
+        settings = active_org.settings
         if not settings:
             settings = OrgSettings.objects.create()
-            user.organization.settings = settings
-            user.organization.save()
+            active_org.settings = settings
+            active_org.save()
 
         return Response({
             "default_weekly_holidays": settings.default_weekly_holidays,
@@ -787,15 +798,16 @@ class HolidaySettingsView(APIView):
 
     @method_decorator(permission_required('holidays:manage'))
     def patch(self, request):
-        user = request.user
-        if not user.organization:
+        active_org = self._get_active_org(request)
+        if not active_org:
             return Response({"error": "User does not belong to an organization."}, status=status.HTTP_400_BAD_REQUEST)
 
-        settings = user.organization.settings
+        settings = active_org.settings
         if not settings:
             settings = OrgSettings.objects.create()
-            user.organization.settings = settings
-            user.organization.save()
+            active_org.settings = settings
+            active_org.save()
+
 
         data = request.data
         if 'default_weekly_holidays' in data:
@@ -811,6 +823,7 @@ class HolidaySettingsView(APIView):
             "monthly_recurring_holidays": settings.monthly_recurring_holidays,
             "yearly_recurring_holidays": settings.yearly_recurring_holidays,
         }, status=status.HTTP_200_OK)
+
 
 
 # --------------------------------------------------------------------------------

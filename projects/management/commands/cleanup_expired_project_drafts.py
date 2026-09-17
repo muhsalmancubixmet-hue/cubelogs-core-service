@@ -18,10 +18,5 @@ class Command(BaseCommand):
         )
         count = expired.count()
         for att in expired:
-            if att.file:
-                try:
-                    att.file.delete(save=False)
-                except Exception as e:
-                    self.stderr.write(f"Failed to delete file {att.file_name}: {e}")
-        expired.delete()
+            att.delete()
         self.stdout.write(self.style.SUCCESS(f"Successfully cleaned up {count} expired draft attachments."))

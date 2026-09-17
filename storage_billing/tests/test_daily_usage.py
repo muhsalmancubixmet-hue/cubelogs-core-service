@@ -599,3 +599,232 @@ class StorageDailyUsageTestCase(TestCase):
         self.assertEqual(usage_recalc.daily_credit_rate_snapshot, original_rate_snapshot)
         self.assertEqual(usage_recalc.storage_charge, original_charge)
         self.assertEqual(usage_recalc.monthly_credit_price_snapshot, Decimal("20.00"))
+
+    def test_utc_boundary_upload_23_59_59_included(self):
+        """
+        Explicit UTC boundary: upload at 23:59:59 UTC on target day is included on that day.
+        """
+        target = date(2026, 9, 9)
+        upload_time = datetime(2026, 9, 9, 23, 59, 59, tzinfo=dt_timezone.utc)
+        file_obj = StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-utc-1",
+            original_filename="late_upload.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/late_upload.pdf",
+            uploaded_at=upload_time
+        )
+        self.assertTrue(StorageCalculationService.is_file_billable_on_date(file_obj, target))
+        qs = StorageCalculationService.get_billable_files_qs(self.org, target)
+        self.assertIn(file_obj, qs)
+        usage, _ = StorageService.calculate_or_update_daily_usage(self.org, target)
+        self.assertEqual(usage.billable_bytes, 1_000_000_000)
+        self.assertEqual(usage.storage_credits, 1)
+
+    def test_utc_boundary_delete_00_00_01_included(self):
+        """
+        Explicit UTC boundary: upload yesterday, delete at 00:00:01 UTC today => included today.
+        """
+        target = date(2026, 9, 9)
+        upload_time = datetime(2026, 9, 8, 12, 0, 0, tzinfo=dt_timezone.utc)
+        delete_time = datetime(2026, 9, 9, 0, 0, 1, tzinfo=dt_timezone.utc)
+        file_obj = StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-utc-2",
+            original_filename="early_delete.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/early_delete.pdf",
+            uploaded_at=upload_time
+        )
+        StorageService.record_file_deletion(file_obj, deleted_at=delete_time)
+        self.assertTrue(StorageCalculationService.is_file_billable_on_date(file_obj, target))
+        qs = StorageCalculationService.get_billable_files_qs(self.org, target)
+        self.assertIn(file_obj, qs)
+        usage, _ = StorageService.calculate_or_update_daily_usage(self.org, target)
+        self.assertEqual(usage.billable_bytes, 1_000_000_000)
+        self.assertEqual(usage.storage_credits, 1)
+
+    def test_utc_boundary_delete_before_day_start_excluded(self):
+        """
+        Explicit UTC boundary: deleted at 23:59:59 UTC yesterday => excluded today.
+        """
+        target = date(2026, 9, 9)
+        upload_time = datetime(2026, 9, 8, 12, 0, 0, tzinfo=dt_timezone.utc)
+        delete_time = datetime(2026, 9, 8, 23, 59, 59, tzinfo=dt_timezone.utc)
+        file_obj = StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-utc-3",
+            original_filename="yesterday_delete.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/yesterday_delete.pdf",
+            uploaded_at=upload_time
+        )
+        StorageService.record_file_deletion(file_obj, deleted_at=delete_time)
+        self.assertFalse(StorageCalculationService.is_file_billable_on_date(file_obj, target))
+        qs = StorageCalculationService.get_billable_files_qs(self.org, target)
+        self.assertNotIn(file_obj, qs)
+
+    def test_provisional_row_preserves_snapshots_on_global_change(self):
+        """
+        Provisional row created for Day D freezes its rate snapshot.
+        Admin subsequently changes credit size and price.
+        Recalculation on that unfinalized row preserves original snapshots.
+        """
+        target = date(2026, 9, 9)
+        StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-snap-1",
+            original_filename="snap.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/snap.pdf",
+            uploaded_at=datetime(2026, 9, 9, 10, 0, 0, tzinfo=dt_timezone.utc)
+        )
+        usage1, _ = StorageService.calculate_or_update_daily_usage(
+            self.org, target, is_finalized=False
+        )
+        self.assertEqual(usage1.storage_credit_size_bytes_snapshot, 1_000_000_000)
+        self.assertEqual(usage1.monthly_credit_price_snapshot, Decimal("20.00"))
+
+        # Admin changes global settings
+        self.g_settings.storage_credit_size_bytes = 2_000_000_000
+        self.g_settings.storage_credit_monthly_price = Decimal("30.00")
+        self.g_settings.save()
+
+        # Recalculate unfinalized row
+        usage2, _ = StorageService.calculate_or_update_daily_usage(
+            self.org, target, is_finalized=False
+        )
+        self.assertEqual(usage2.storage_credit_size_bytes_snapshot, 1_000_000_000)
+        self.assertEqual(usage2.monthly_credit_price_snapshot, Decimal("20.00"))
+
+    def test_price_change_critical_regression_next_day_finalization(self):
+        """
+        Section 22 Mandatory Regression Test:
+        Day D at 12:05:
+            row created with credit size = 1,000,000,000 and price = ₹20.00 (1 credit).
+        Later:
+            GlobalBillingSettings changed: credit size = 2,000,000,000, price = ₹25.00.
+            Second file (1 GB) uploaded on Day D. Total bytes = 2 GB.
+        Next-day finalization:
+            Expected row D:
+            storage_credit_size_bytes_snapshot = 1,000,000,000 (OLD)
+            monthly_credit_price_snapshot = 20.00 (OLD)
+            storage_credits = 2 (calculated using old 1 GB credit size: ceil(2 GB / 1 GB) = 2, NOT ceil(2 GB / 2 GB) = 1)
+            storage_charge = calculated using old ₹20.00 price (2 * 20 / 30 = 1.333333333333, NOT 1 * 25 / 30 = 0.833333333333)
+        """
+        target = date(2026, 9, 9)
+        # File 1 at 10:00 UTC
+        StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-pchange-1",
+            original_filename="file1.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/file1.pdf",
+            uploaded_at=datetime(2026, 9, 9, 10, 0, 0, tzinfo=dt_timezone.utc)
+        )
+        usage_prov, created = StorageService.calculate_or_update_daily_usage(
+            self.org, target, is_finalized=False
+        )
+        self.assertTrue(created)
+        self.assertEqual(usage_prov.storage_credit_size_bytes_snapshot, 1_000_000_000)
+        self.assertEqual(usage_prov.monthly_credit_price_snapshot, Decimal("20.00"))
+        self.assertEqual(usage_prov.storage_credits, 1)
+
+        # Later: admin changes settings to 2 GB and ₹25.00
+        self.g_settings.storage_credit_size_bytes = 2_000_000_000
+        self.g_settings.storage_credit_monthly_price = Decimal("25.00")
+        self.g_settings.save()
+
+        # Another 1 GB file uploaded in the evening on Day D
+        StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-pchange-2",
+            original_filename="file2.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/file2.pdf",
+            uploaded_at=datetime(2026, 9, 9, 20, 0, 0, tzinfo=dt_timezone.utc)
+        )
+
+        # Next-day finalization
+        usage_final, _ = StorageService.calculate_or_update_daily_usage(
+            self.org, target, is_finalized=True
+        )
+        self.assertTrue(usage_final.is_finalized)
+        self.assertEqual(usage_final.storage_credit_size_bytes_snapshot, 1_000_000_000)
+        self.assertEqual(usage_final.monthly_credit_price_snapshot, Decimal("20.00"))
+        self.assertEqual(usage_final.billable_bytes, 2_000_000_000)
+        # Using old 1 GB credit size: ceil(2 GB / 1 GB) = 2 credits
+        self.assertEqual(usage_final.storage_credits, 2)
+        # Using old ₹20.00 price in September (30 days): (2 * 20) / 30 = 1.333333333333
+        expected_charge = Decimal("40.00") / Decimal("30")
+        from decimal import ROUND_HALF_UP
+        self.assertEqual(
+            usage_final.storage_charge,
+            expected_charge.quantize(Decimal("0.000000000001"), rounding=ROUND_HALF_UP)
+        )
+
+    def test_reconcile_usage_date_range_enforces_golive_lower_bound(self):
+        """
+        Section 23 Mandatory Go-Live Test:
+        StorageFile uploaded Aug 11 exists.
+        Run automatic range reconciliation from Aug 11 to Sep 9.
+        Expected:
+            NO StorageDailyUsage created for Aug 11 through Sep 8.
+            Earliest row created is 2026-09-09.
+            pre_golive_skipped records the skipped pre-go-live days.
+        """
+        StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-aug11",
+            original_filename="historical_aug11.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/08/historical_aug11.pdf",
+            uploaded_at=datetime(2026, 8, 11, 11, 0, 0, tzinfo=dt_timezone.utc)
+        )
+
+        res = StorageService.reconcile_usage_date_range(
+            organization=self.org,
+            start_date=date(2026, 8, 11),
+            end_date=date(2026, 9, 9)
+        )
+        self.assertGreater(res['pre_golive_skipped'], 0)
+        # Days from Aug 11 to Sep 8 = 29 days
+        self.assertEqual(res['pre_golive_skipped'], 29)
+
+        # Check DB: no rows before 2026-09-09
+        pre_golive_rows = StorageDailyUsage.objects.filter(
+            organization=self.org,
+            usage_date__lt=date(2026, 9, 9)
+        )
+        self.assertEqual(pre_golive_rows.count(), 0)
+
+        # Earliest row is 2026-09-09
+        golive_row = StorageDailyUsage.objects.filter(
+            organization=self.org,
+            usage_date=date(2026, 9, 9)
+        ).first()
+        self.assertIsNotNone(golive_row)
+        self.assertEqual(golive_row.billable_bytes, 1_000_000_000)
+
+    def test_billing_disabled_still_meters_daily_usage(self):
+        """
+        Metering continues even when storage_billing_enabled = False.
+        """
+        self.g_settings.storage_billing_enabled = False
+        self.g_settings.save()
+
+        target = date(2026, 9, 9)
+        StorageService.record_file_upload(
+            organization=self.org,
+            source_object_id="att-meter-disabled",
+            original_filename="meter_test.pdf",
+            size_bytes=1_000_000_000,
+            file_path="project_attachments/2026/09/meter_test.pdf",
+            uploaded_at=datetime(2026, 9, 9, 10, 0, 0, tzinfo=dt_timezone.utc)
+        )
+
+        usage, created = StorageService.calculate_or_update_daily_usage(self.org, target)
+        self.assertTrue(created)
+        self.assertEqual(usage.billable_bytes, 1_000_000_000)
+        self.assertEqual(usage.storage_credits, 1)
+        self.assertEqual(usage.storage_credit_size_bytes_snapshot, 1_000_000_000)

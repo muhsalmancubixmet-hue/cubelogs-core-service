@@ -491,20 +491,21 @@ class PasswordResetRequestView(APIView):
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        import hashlib
         from django.core.signing import TimestampSigner
         from django.conf import settings
 
-        email = request.data.get('email')
+        email = (request.data.get('email') or '').strip()
         if not email:
             return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            employee = Employee.objects.get(email=email)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account with this email does not exist.'}, status=status.HTTP_404_NOT_FOUND)
+        employee = Employee.objects.filter(email__iexact=email).first()
+        if not employee or not employee.is_active:
+            return Response({'message': 'Password reset link has been sent to your email.'}, status=status.HTTP_200_OK)
 
         signer = TimestampSigner(salt='password-reset')
-        token = signer.sign(str(employee.id))
+        pw_fp = hashlib.sha256(employee.password.encode('utf-8')).hexdigest()[:16]
+        token = signer.sign(f"{employee.id}:{pw_fp}")
 
         frontend_url = settings.FRONTEND_URL
         reset_url = f"{frontend_url}/login/reset?token={token}"
@@ -517,7 +518,7 @@ We received a request to reset the password for your CubeLogs account.
 Click the link below to securely reset your password:
 {reset_url}
 
-This link is highly time-sensitive and will expire in 2 minutes.
+This link is highly time-sensitive and will expire in 30 minutes.
 
 If you did not request this, you can safely ignore this email.
 """
@@ -542,6 +543,7 @@ class PasswordResetValidateView(APIView):
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        import hashlib
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
         token = request.data.get('token')
@@ -550,15 +552,19 @@ class PasswordResetValidateView(APIView):
 
         signer = TimestampSigner(salt='password-reset')
         try:
-            employee_id = signer.unsign(token, max_age=120)
-            Employee.objects.get(id=employee_id)
+            payload = signer.unsign(token, max_age=1800)
+            parts = payload.split(':', 1)
+            employee = Employee.objects.get(id=parts[0])
+            if len(parts) == 2:
+                current_fp = hashlib.sha256(employee.password.encode('utf-8')).hexdigest()[:16]
+                if parts[1] != current_fp:
+                    return Response({'error': 'Password reset link has already been used or is invalid.'}, status=status.HTTP_400_BAD_REQUEST)
+
             return Response({'message': 'Token is valid.'}, status=status.HTTP_200_OK)
         except SignatureExpired:
             return Response({'error': 'Password reset link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
-        except BadSignature:
+        except (BadSignature, ValueError, Employee.DoesNotExist):
             return Response({'error': 'Invalid password reset link.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # --------------------------------------------------------------------------------
@@ -569,6 +575,7 @@ class PasswordResetConfirmView(APIView):
     throttle_classes = [AuthRateThrottle]
 
     def post(self, request):
+        import hashlib
         from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 
         token = request.data.get('token')
@@ -584,8 +591,13 @@ class PasswordResetConfirmView(APIView):
 
         signer = TimestampSigner(salt='password-reset')
         try:
-            employee_id = signer.unsign(token, max_age=120)
-            employee = Employee.objects.get(id=employee_id)
+            payload = signer.unsign(token, max_age=1800)
+            parts = payload.split(':', 1)
+            employee = Employee.objects.get(id=parts[0])
+            if len(parts) == 2:
+                current_fp = hashlib.sha256(employee.password.encode('utf-8')).hexdigest()[:16]
+                if parts[1] != current_fp:
+                    return Response({'error': 'Password reset link has already been used or is invalid.'}, status=status.HTTP_400_BAD_REQUEST)
 
             employee.set_password(password)
             employee.save()
@@ -600,10 +612,8 @@ class PasswordResetConfirmView(APIView):
             return Response({'message': 'Password has been successfully updated.'}, status=status.HTTP_200_OK)
         except SignatureExpired:
             return Response({'error': 'Password reset link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
-        except BadSignature:
+        except (BadSignature, ValueError, Employee.DoesNotExist):
             return Response({'error': 'Invalid password reset link.'}, status=status.HTTP_400_BAD_REQUEST)
-        except Employee.DoesNotExist:
-            return Response({'error': 'Account not found.'}, status=status.HTTP_404_NOT_FOUND)
 
 
 # --------------------------------------------------------------------------------
@@ -876,7 +886,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         from django.core.mail import send_mail
         from django.core.signing import TimestampSigner
         from django.conf import settings as dj_settings
-        from users.models import Template
+        from users.models import Role, Template
         from attendance.models import Schedule
 
         file_obj = request.FILES.get('file')
@@ -914,7 +924,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
         failed_rows = []
 
         # List of existing/valid roles
-        valid_roles = list(Template.objects.values_list('name', flat=True)) + list(Schedule.objects.values_list('designation', flat=True))
+        valid_roles = list(Role.objects.filter(is_active=True).values_list('name', flat=True)) + list(Schedule.objects.values_list('designation', flat=True))
         valid_roles = [r.lower().strip() for r in valid_roles]
 
         for idx, row in df.iterrows():

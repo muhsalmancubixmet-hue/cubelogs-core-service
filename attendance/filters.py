@@ -88,6 +88,11 @@ class LeaveTypeFilter(filters.FilterSet):
 
 class LeaveFilter(filters.FilterSet):
     search = filters.CharFilter(method="filter_search")
+    date = filters.DateFilter(method="filter_single_date")
+    start_date = filters.DateFilter(field_name='startDate', lookup_expr='gte')
+    end_date = filters.DateFilter(field_name='endDate', lookup_expr='lte')
+    year = filters.NumberFilter(field_name='startDate__year')
+    month = filters.NumberFilter(field_name='startDate__month')
     ordering = filters.OrderingFilter(
         fields=(
             ('id', 'id'),
@@ -105,6 +110,7 @@ class LeaveFilter(filters.FilterSet):
             'employee',
             'leaveType',
             'status',
+            'dayType',
         ]
 
     def filter_search(self, queryset, name, value):
@@ -118,6 +124,12 @@ class LeaveFilter(filters.FilterSet):
             models.Q(employee__last_name__icontains=value) |
             models.Q(employee__email__icontains=value)
         )
+
+    def filter_single_date(self, queryset, name, value):
+        if not value:
+            return queryset
+        return queryset.filter(startDate__lte=value, endDate__gte=value)
+
 
 
 class HolidayFilter(filters.FilterSet):

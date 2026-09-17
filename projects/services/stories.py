@@ -30,12 +30,17 @@ def create_story(
     order=0,
     user=None,
     member_ids=None,
+    draft_token=None,
 ):
     """
     Creates a new user story under the given project.
     Always enforces sprint=None for backlog creations.
-    Validates Fibonacci story points, due date, epic ownership, and member access.
+    Validates Fibonacci story points, due date, epic ownership, member access, and rich-text base64.
     """
+    from projects.rich_text_utils import validate_rich_text_no_base64, reconcile_entity_rich_text_attachments
+    validate_rich_text_no_base64(description, field_name='description')
+    validate_rich_text_no_base64(acceptance_criteria, field_name='acceptance_criteria')
+
     if story_points and int(story_points) not in FIBONACCI_STORY_POINTS:
         raise ValidationError({'story_points': f"Story points must be one of {FIBONACCI_STORY_POINTS}"})
 
@@ -114,6 +119,18 @@ def create_story(
             'due_date': str(due_date) if due_date else None,
         }
     )
+
+    if draft_token:
+        from projects.models import ProjectAttachment
+        ProjectAttachment.objects.filter(
+            draft_token=draft_token,
+            uploaded_by=user,
+            company=project.company,
+            is_temporary=True
+        ).update(story=project_story, draft_token=None, is_temporary=False, expires_at=None)
+
+    if description or acceptance_criteria:
+        reconcile_entity_rich_text_attachments(project_story, user=user)
 
     recalculate_project_progress(project)
     return project_story
