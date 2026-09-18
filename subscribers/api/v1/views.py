@@ -103,12 +103,16 @@ class SubscriberAccountViewSet(FilterMixinNew, viewsets.ModelViewSet):
     filterset_class = SubscriberAccountFilter
 
     def get_queryset(self):
-        # Sync subscriber accounts for all tenant superadmins
-        superadmins = Employee.objects.filter(isSuperAdmin=True, organization__isnull=False).select_related('organization', 'organization__settings')
+        # Sync subscriber accounts for all active tenant superadmins
+        superadmins = Employee.objects.filter(
+            isSuperAdmin=True,
+            is_active=True,
+            organization__isnull=False,
+            organization__is_deleted=False
+        ).select_related('organization', 'organization__settings')
         valid_emails = set()
         for sa in superadmins:
             valid_emails.add(sa.email)
-            sub = SubscriberAccount.objects.filter(email=sa.email).first()
             settings = getattr(sa.organization, 'settings', None)
             modules = []
             if settings:
@@ -120,6 +124,7 @@ class SubscriberAccountViewSet(FilterMixinNew, viewsets.ModelViewSet):
             is_active = (settings.subscriptionStatus == 'Active') if settings else True
             expires_at = settings.subscriptionExpiresAt if settings else None
 
+            sub = SubscriberAccount.objects.filter(email=sa.email).first()
             if not sub:
                 SubscriberAccount.objects.create(
                     email=sa.email,
@@ -128,20 +133,42 @@ class SubscriberAccountViewSet(FilterMixinNew, viewsets.ModelViewSet):
                     expiresAt=expires_at
                 )
             else:
-                if settings and (sub.isActive != is_active or sub.expiresAt != expires_at or sub.packageName != pkg_name):
+                if settings and (sub.isActive != is_active or sub.expiresAt != expires_at or sub.packageName != pkg_name or sub.is_deleted):
                     sub.packageName = pkg_name
                     sub.isActive = is_active
                     sub.expiresAt = expires_at
-                    sub.save(update_fields=['packageName', 'isActive', 'expiresAt', 'updated_at'])
+                    sub.is_deleted = False
+                    sub.save(update_fields=['packageName', 'isActive', 'expiresAt', 'is_deleted', 'updated_at'])
 
         # Prune stale/orphaned subscriber accounts that are no longer active tenant superadmins
         if valid_emails:
             SubscriberAccount.objects.exclude(email__in=valid_emails).delete()
-        else:
-            # If there are superadmin employees in DB (without orgs yet), do not prune all, else prune if orphaned
-            pass
 
         return SubscriberAccount.objects.all().order_by('-updated_at')
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        email = instance.email
+
+        # Deactivate associated tenant organizations and their memberships/superadmins
+        superadmins = Employee.objects.filter(email=email)
+        for sa in superadmins:
+            if sa.organization:
+                org = sa.organization
+                org.is_deleted = True
+                org.save(update_fields=['is_deleted', 'updated_at'])
+                if hasattr(org, 'settings') and org.settings:
+                    org.settings.subscriptionStatus = 'Cancelled'
+                    org.settings.save(update_fields=['subscriptionStatus', 'updated_at'])
+                org.memberships.update(is_active_in_org=False, is_deleted=True, employment_status='Deactivated')
+            if not request.user or sa.id != request.user.id:
+                sa.is_active = False
+                sa.save(update_fields=['is_active'])
+
+        # Hard delete the subscriber account record
+        instance.hard_delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # --------------------------------------------------------------------------------
