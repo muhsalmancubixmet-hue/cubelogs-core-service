@@ -2319,7 +2319,8 @@
       body.innerHTML = '';
       filtered.forEach(sub => {
         const expDate = sub.expiresAt ? new Date(sub.expiresAt).toLocaleDateString() : 'Lifetime';
-        const updateDate = new Date(sub.updatedAt).toLocaleString();
+        const rawUpdated = sub.updated_at || sub.updatedAt || sub.createdAt || sub.created_at;
+        const updateDate = rawUpdated ? new Date(rawUpdated).toLocaleString() : 'Just now';
 
         // Build module badges from packageName
         const moduleColors = {
@@ -2368,10 +2369,10 @@
 
 
     async function deleteSubscriber(id) {
-      if (!confirm('Are you sure you want to remove this subscriber override?')) return;
+      if (!confirm('Are you sure you want to remove this subscriber account and deactivate their workspace?')) return;
       try {
         await apiFetch(`/api/subscribers/${id}/`, 'DELETE');
-        showNotification('Subscriber override removed.');
+        showNotification('Subscriber account removed successfully.');
         fetchSubscribers();
         updateHeaderMetrics();
       } catch (err) {
