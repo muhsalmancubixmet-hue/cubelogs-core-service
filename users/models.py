@@ -129,6 +129,7 @@ class EmployeeManager(BaseUserManager):
             raise ValueError('The Email field must be set')
         email = self.normalize_email(email)
         extra_fields.setdefault('username', username or email)
+        extra_fields.setdefault('is_active', True)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user._raw_password = password

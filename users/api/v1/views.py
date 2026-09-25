@@ -445,7 +445,14 @@ class MagicLoginView(APIView):
             employee_id = signer.unsign(token, max_age=604800)
             employee = Employee.objects.get(id=employee_id)
             if not employee.is_active:
-                return Response({'error': 'User account is inactive'}, status=status.HTTP_400_BAD_REQUEST)
+                employee.is_active = True
+                employee.save(update_fields=['is_active'])
+
+                from users.models import OrganizationMembership
+                OrganizationMembership.objects.filter(
+                    user=employee,
+                    is_deleted=False
+                ).update(is_active_in_org=True)
 
             serializer = EmployeeSerializer(employee)
             user_data = serializer.data
@@ -1011,6 +1018,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
                     existing.last_name = last_name
                     if phone and phone != 'nan':
                         existing.phone = phone
+                    existing.is_active = True
                     existing.save()
 
                     # Queue welcome email for existing user joining org

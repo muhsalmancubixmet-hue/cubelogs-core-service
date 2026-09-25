@@ -528,6 +528,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 existing.role_name = role_obj.name
             existing.organization = target_org
             existing.employment_status = 'Active'
+            existing.is_active = True
             existing.save()
 
             use_default = validated_data.get('useDefaultPermissions', self.initial_data.get('useDefaultPermissions', getattr(existing, 'useDefaultPermissions', True)))
