@@ -29,6 +29,7 @@ from payroll.views import (
     BulkRecordSalaryPaymentView,
     VoidSalaryPaymentView,
     PayrollTaskStatusView,
+    PayrollBankExportView,
 )
 
 router = DefaultRouter()
@@ -45,6 +46,8 @@ urlpatterns = [
     path('payroll/periods/<int:year>/<int:month>/calculate/', PayrollPeriodCalculateView.as_view(), name='payroll-period-calculate'),
     path('payroll/periods/<int:year>/<int:month>/finalize/', PayrollPeriodFinalizeView.as_view(), name='payroll-period-finalize'),
     path('payroll/periods/<int:year>/<int:month>/reopen/', PayrollPeriodReopenView.as_view(), name='payroll-period-reopen'),
+    path('payroll/periods/<int:year>/<int:month>/export-bank-file/', PayrollBankExportView.as_view(), name='payroll-export-bank-file'),
+    path('periods/<int:year>/<int:month>/export-bank-file/', PayrollBankExportView.as_view(), name='payroll-export-bank-file-short'),
     path('payroll/periods/<int:year>/<int:month>/employees/', PayrollEmployeeSnapshotsView.as_view(), name='payroll-period-employees'),
     path('payroll/periods/<int:year>/<int:month>/employees/<int:employee_id>/', PayrollEmployeeDetailSnapshotView.as_view(), name='payroll-employee-detail-snapshot'),
     path('payroll/periods/<int:year>/<int:month>/adjustments/', PayrollAdjustmentCreateView.as_view(), name='payroll-adjustment-create'),

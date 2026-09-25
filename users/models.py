@@ -201,6 +201,14 @@ class Employee(AbstractUser):
     joining_date = models.DateField(null=True, blank=True, help_text="Official employment start date.")
     last_working_date = models.DateField(null=True, blank=True, help_text="Official employment termination/last working date.")
 
+    # Bank Details
+    bank_name = models.CharField(max_length=100, blank=True, null=True)
+    account_number = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    ifsc_code = models.CharField(max_length=20, blank=True, null=True)
+    account_holder_name = models.CharField(max_length=255, blank=True, null=True)
+    bank_branch = models.CharField(max_length=100, blank=True, null=True)
+    upi_id = models.CharField(max_length=100, blank=True, null=True)
+
     objects: EmployeeManager = EmployeeManager()  # type: ignore[assignment]
 
     USERNAME_FIELD = 'email'
@@ -357,6 +365,14 @@ class EmployeeProfile(BaseModel):
         blank=True,
         null=True
     )
+
+    # Bank Details
+    bank_name = models.CharField(max_length=100, blank=True, null=True)
+    account_number = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    ifsc_code = models.CharField(max_length=20, blank=True, null=True)
+    account_holder_name = models.CharField(max_length=255, blank=True, null=True)
+    bank_branch = models.CharField(max_length=100, blank=True, null=True)
+    upi_id = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
         db_table = 'api_employeeprofile'

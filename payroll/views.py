@@ -42,6 +42,7 @@ from payroll.serializers import (
     SalaryPaymentSerializer,
 )
 from payroll.pdf import generate_payslip_pdf
+from payroll.exporters import BankPaymentExporter
 from payroll.services import (
     get_employee_salary_structure,
     get_bulk_employee_salary_structures,
@@ -1096,6 +1097,108 @@ class PayrollTaskStatusView(BasePayrollAPIView):
             response_data["error"] = str(res.result)
 
         return Response(response_data, status=status.HTTP_200_OK)
+
+
+class PayrollBankExportView(BasePayrollAPIView):
+    """
+    Generates bank-compatible payment disbursement files (Excel / CSV)
+    from a finalized payroll period.
+    Supports HDFC, ICICI, SBI, and GENERIC_NEFT formats.
+    GET: Pre-check summary (payable count, total amount, unpayable employees count).
+    POST: Generate and download file (or JSON precheck if requested).
+    """
+
+    def get(self, request, year, month):
+        if not has_fine_grained_permission(request.user, ['payroll:manage', 'payroll:process']):
+            raise PermissionDenied("You do not have permission to export bank payment files.")
+
+        org = self.get_organization(request)
+        year, month = int(year), int(month)
+
+        period = PayrollPeriod.objects.filter(
+            organization=org,
+            year=year,
+            month=month,
+            is_deleted=False
+        ).first()
+
+        if not period:
+            return Response(
+                {"error": f"Payroll period {year}-{month:02d} not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if period.status != 'Finalized':
+            return Response(
+                {"error": "Cannot generate bank payment file for non-finalized payroll period."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        template = request.query_params.get('template', 'GENERIC_NEFT')
+        debit_account = request.query_params.get('debit_account')
+        remarks = request.query_params.get('remarks')
+
+        exporter = BankPaymentExporter(
+            payroll_period=period,
+            template=template,
+            debit_account=debit_account,
+            remarks=remarks
+        )
+
+        return Response(exporter.get_summary(), status=status.HTTP_200_OK)
+
+    def post(self, request, year, month):
+        if not has_fine_grained_permission(request.user, ['payroll:manage', 'payroll:process']):
+            raise PermissionDenied("You do not have permission to export bank payment files.")
+
+        org = self.get_organization(request)
+        year, month = int(year), int(month)
+
+        period = PayrollPeriod.objects.filter(
+            organization=org,
+            year=year,
+            month=month,
+            is_deleted=False
+        ).first()
+
+        if not period:
+            return Response(
+                {"error": f"Payroll period {year}-{month:02d} not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if period.status != 'Finalized':
+            return Response(
+                {"error": "Cannot generate bank payment file for non-finalized payroll period."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        data = request.data if isinstance(request.data, dict) else {}
+        template = data.get('template') or request.query_params.get('template', 'GENERIC_NEFT')
+        debit_account = data.get('debit_account') or request.query_params.get('debit_account')
+        remarks = data.get('remarks') or request.query_params.get('remarks')
+        file_format = data.get('format') or request.query_params.get('format', 'XLSX')
+        is_precheck = data.get('precheck') or (request.query_params.get('precheck') == 'true')
+
+        exporter = BankPaymentExporter(
+            payroll_period=period,
+            template=template,
+            debit_account=debit_account,
+            remarks=remarks
+        )
+
+        if is_precheck:
+            return Response(exporter.get_summary(), status=status.HTTP_200_OK)
+
+        file_buffer, filename, content_type = exporter.generate_file(file_format=file_format)
+
+        response = HttpResponse(file_buffer.getvalue(), content_type=content_type)
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
+        response['Pragma'] = 'no-cache'
+        response['X-Content-Type-Options'] = 'nosniff'
+        return response
+
 
 
 

@@ -115,8 +115,19 @@ class OrgSettingsSerializer(serializers.ModelSerializer):
             'payroll_currency', 'payroll_proration_basis', 'daily_wage_paid_leave_eligible',
             'hourly_wage_paid_leave_eligible',
             'company_address', 'company_phone', 'company_email', 'billing_email', 'company_tax_id',
-            'payroll_frequency', 'payroll_processing_day', 'salary_payment_day'
+            'payroll_frequency', 'payroll_processing_day', 'salary_payment_day',
+            'corporate_bank_name', 'corporate_account_number', 'corporate_ifsc_code',
+            'corporate_account_holder_name', 'corporate_client_code', 'corporate_bank_branch'
         ]
+
+    def validate_corporate_ifsc_code(self, value):
+        if value:
+            import re
+            cleaned = value.strip().upper()
+            if not re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', cleaned):
+                raise serializers.ValidationError("Invalid corporate IFSC code format. Expected 4 letters, 0, followed by 6 alphanumeric characters (e.g., HDFC0001234).")
+            return cleaned
+        return value
 
     def validate_payroll_processing_day(self, value):
         if value < 1 or value > 31:
