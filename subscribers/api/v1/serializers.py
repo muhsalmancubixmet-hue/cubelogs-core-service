@@ -130,18 +130,18 @@ class SubscriberAccountSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_organization_id(self, obj):
-        admin = Employee.objects.filter(email=obj.email, isSuperAdmin=True).select_related('organization').first()
-        return admin.organization_id if admin and admin.organization else None
+        emp = Employee.objects.filter(email=obj.email).select_related('organization').first()
+        return emp.organization_id if emp and emp.organization else None
 
     def get_organization_name(self, obj):
-        admin = Employee.objects.filter(email=obj.email, isSuperAdmin=True).select_related('organization').first()
-        return admin.organization.name if admin and admin.organization else None
+        emp = Employee.objects.filter(email=obj.email).select_related('organization').first()
+        return emp.organization.name if emp and emp.organization else None
 
     def get_employee_count(self, obj):
         from users.models import OrganizationMembership
-        admin = Employee.objects.filter(email=obj.email, isSuperAdmin=True).select_related('organization').first()
-        if admin and admin.organization:
-            return OrganizationMembership.objects.filter(organization=admin.organization, is_deleted=False).count()
+        emp = Employee.objects.filter(email=obj.email).select_related('organization').first()
+        if emp and emp.organization:
+            return OrganizationMembership.objects.filter(organization=emp.organization, is_deleted=False).count()
         return 0
 
 
