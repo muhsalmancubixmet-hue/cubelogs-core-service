@@ -121,9 +121,28 @@ class SubscriptionPackageSerializer(serializers.ModelSerializer):
 
 
 class SubscriberAccountSerializer(serializers.ModelSerializer):
+    organization_id = serializers.SerializerMethodField()
+    organization_name = serializers.SerializerMethodField()
+    employee_count = serializers.SerializerMethodField()
+
     class Meta:
         model = SubscriberAccount
         fields = '__all__'
+
+    def get_organization_id(self, obj):
+        admin = Employee.objects.filter(email=obj.email, isSuperAdmin=True).select_related('organization').first()
+        return admin.organization_id if admin and admin.organization else None
+
+    def get_organization_name(self, obj):
+        admin = Employee.objects.filter(email=obj.email, isSuperAdmin=True).select_related('organization').first()
+        return admin.organization.name if admin and admin.organization else None
+
+    def get_employee_count(self, obj):
+        from users.models import OrganizationMembership
+        admin = Employee.objects.filter(email=obj.email, isSuperAdmin=True).select_related('organization').first()
+        if admin and admin.organization:
+            return OrganizationMembership.objects.filter(organization=admin.organization, is_deleted=False).count()
+        return 0
 
 
 # ==============================================================================
