@@ -151,14 +151,17 @@ class UserService:
         return refresh
 
     @staticmethod
-    def send_welcome_email(employee, synchronous=False):
+    def send_welcome_email(employee, raw_password=None, synchronous=False):
         """Send a standard welcome email to an existing employee joining a new organization."""
-        if not employee.email or employee.isSuperAdmin:
+        if not employee.email:
             return
 
-        password_val = "Use your existing password"
-        subject = "Welcome to CubeLogs!"
-        dashboard_url = f"{settings.FRONTEND_URL}/login"
+        login_token = TimestampSigner(salt='auto-login').sign(str(employee.id))
+        frontend_url = settings.FRONTEND_URL
+        dashboard_url = f"{frontend_url}/login/verify?token={login_token}"
+
+        password_val = raw_password if raw_password else "Use your existing password"
+        subject = "Welcome to CubeLogs - Access Your Dashboard"
 
         html_content = render_to_string(
             "emails/employee/welcome.html",
@@ -172,7 +175,7 @@ class UserService:
                 "product_company_name": settings.COMPANY_NAME,
             }
         )
-        EmailService.send_transactional_email(employee.email, subject, html_content, 'WELCOME', password=None, synchronous=synchronous)
+        EmailService.send_transactional_email(employee.email, subject, html_content, 'WELCOME', password=raw_password, synchronous=synchronous)
 
     @staticmethod
     def send_admin_onboarding_email(employee, raw_password, synchronous=False):

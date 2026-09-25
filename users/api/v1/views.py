@@ -1018,6 +1018,10 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
                     existing.last_name = last_name
                     if phone and phone != 'nan':
                         existing.phone = phone
+                    from core.utils import generate_secure_password
+                    raw_password = generate_secure_password(12)
+                    existing.set_password(raw_password)
+                    existing._raw_password = raw_password
                     existing.is_active = True
                     existing.save()
 
@@ -1025,7 +1029,7 @@ class EmployeeViewSet(ActionPermissionMixin, FilterMixinNew, viewsets.ModelViewS
                     try:
                         from django.db import transaction
                         transaction.on_commit(
-                            lambda emp=existing: UserService.send_welcome_email(emp, synchronous=False)
+                            lambda emp=existing, pwd=raw_password: UserService.send_welcome_email(emp, raw_password=pwd, synchronous=False)
                         )
                     except Exception as exc:
                         import logging
