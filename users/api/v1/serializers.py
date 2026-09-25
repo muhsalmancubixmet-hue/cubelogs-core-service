@@ -529,6 +529,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
             existing.organization = target_org
             existing.employment_status = 'Active'
             existing.is_active = True
+
+            from core.utils import generate_secure_password
+            raw_password = generate_secure_password(12)
+            existing.set_password(raw_password)
+            existing._raw_password = raw_password
             existing.save()
 
             use_default = validated_data.get('useDefaultPermissions', self.initial_data.get('useDefaultPermissions', getattr(existing, 'useDefaultPermissions', True)))
@@ -536,11 +541,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
             effective_role = role_obj or existing.role
             self._sync_permission_overrides(existing, effective_role, use_default, perms_input)
 
-            # Queue welcome email for existing user joining new/reactivated org (Use existing password)
+            # Queue welcome email for existing user joining new/reactivated org with generated credentials
             try:
                 from django.db import transaction
                 transaction.on_commit(
-                    lambda emp=existing: UserService.send_welcome_email(emp, synchronous=False)
+                    lambda emp=existing, pwd=raw_password: UserService.send_welcome_email(emp, raw_password=pwd, synchronous=False)
                 )
             except Exception as exc:
                 import logging
