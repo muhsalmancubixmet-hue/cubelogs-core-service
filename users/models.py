@@ -129,6 +129,7 @@ class EmployeeManager(BaseUserManager):
             raise ValueError('The Email field must be set')
         email = self.normalize_email(email)
         extra_fields.setdefault('username', username or email)
+        extra_fields.setdefault('is_active', True)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user._raw_password = password
@@ -200,6 +201,14 @@ class Employee(AbstractUser):
     employment_status = models.CharField(max_length=20, choices=EMPLOYMENT_STATUS_CHOICES, default='Active')
     joining_date = models.DateField(null=True, blank=True, help_text="Official employment start date.")
     last_working_date = models.DateField(null=True, blank=True, help_text="Official employment termination/last working date.")
+
+    # Bank Details
+    bank_name = models.CharField(max_length=100, blank=True, null=True)
+    account_number = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    ifsc_code = models.CharField(max_length=20, blank=True, null=True)
+    account_holder_name = models.CharField(max_length=255, blank=True, null=True)
+    bank_branch = models.CharField(max_length=100, blank=True, null=True)
+    upi_id = models.CharField(max_length=100, blank=True, null=True)
 
     objects: EmployeeManager = EmployeeManager()  # type: ignore[assignment]
 
@@ -357,6 +366,14 @@ class EmployeeProfile(BaseModel):
         blank=True,
         null=True
     )
+
+    # Bank Details
+    bank_name = models.CharField(max_length=100, blank=True, null=True)
+    account_number = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    ifsc_code = models.CharField(max_length=20, blank=True, null=True)
+    account_holder_name = models.CharField(max_length=255, blank=True, null=True)
+    bank_branch = models.CharField(max_length=100, blank=True, null=True)
+    upi_id = models.CharField(max_length=100, blank=True, null=True)
 
     class Meta:
         db_table = 'api_employeeprofile'

@@ -219,12 +219,19 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        today = timezone.now().date()
+        client_date_str = request.data.get('date') or (verification_data.get('client_date') if isinstance(verification_data, dict) else None)
+        if client_date_str:
+            try:
+                today = datetime_date.fromisoformat(str(client_date_str))
+            except Exception:
+                today = timezone.now().date()
+        else:
+            today = timezone.now().date()
 
         from django.db import transaction
         with transaction.atomic():
             # Check if already clocked in today (and not clocked out)
-            active_log = AttendanceLog.objects.select_for_update().filter(employee=employee, date=today, clockOut__isnull=True).first()
+            active_log = AttendanceLog.objects.select_for_update().filter(employee=employee, clockOut__isnull=True).first()
             if active_log:
                 return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
 

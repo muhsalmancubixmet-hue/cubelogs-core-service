@@ -8,6 +8,12 @@ from attendance.models import AttendanceLog, Schedule, LeaveType, Leave, Holiday
 
 class AttendanceLogFilter(filters.FilterSet):
     search = filters.CharFilter(method="filter_search")
+    month = filters.NumberFilter(field_name='date__month')
+    year = filters.NumberFilter(field_name='date__year')
+    start_date = filters.DateFilter(field_name='date', lookup_expr='gte')
+    end_date = filters.DateFilter(field_name='date', lookup_expr='lte')
+    employee = filters.NumberFilter(field_name='employee_id')
+    employee_id = filters.NumberFilter(field_name='employee_id')
     ordering = filters.OrderingFilter(
         fields=(
             ('id', 'id'),
@@ -21,6 +27,7 @@ class AttendanceLogFilter(filters.FilterSet):
         fields = [
             'id',
             'employee',
+            'employee_id',
             'date',
             'status',
         ]

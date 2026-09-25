@@ -122,6 +122,14 @@ class OrgSettings(BaseModel):
         help_text="Planned day of month for disbursing monthly salaries (1-31)"
     )
 
+    # Corporate Disbursement Bank Settings
+    corporate_bank_name = models.CharField(max_length=100, blank=True, null=True)
+    corporate_account_number = models.CharField(max_length=50, blank=True, null=True)
+    corporate_ifsc_code = models.CharField(max_length=20, blank=True, null=True)
+    corporate_account_holder_name = models.CharField(max_length=255, blank=True, null=True)
+    corporate_client_code = models.CharField(max_length=50, blank=True, null=True)
+    corporate_bank_branch = models.CharField(max_length=100, blank=True, null=True)
+
     @property
     def is_attendance_enabled(self) -> bool:
         if hasattr(self, '_is_attendance_enabled_temp'):

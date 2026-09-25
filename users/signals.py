@@ -43,6 +43,12 @@ def sync_employee_to_profile(sender, instance, created, **kwargs):
         'last_working_date': instance.last_working_date,
         'phone': instance.phone,
         'profile_photo': instance.profilePhoto,
+        'bank_name': instance.bank_name,
+        'account_number': instance.account_number,
+        'ifsc_code': instance.ifsc_code,
+        'account_holder_name': instance.account_holder_name,
+        'bank_branch': instance.bank_branch,
+        'upi_id': instance.upi_id,
     }
 
     profile, is_new = EmployeeProfile.objects.get_or_create(

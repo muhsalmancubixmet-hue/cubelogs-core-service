@@ -255,12 +255,28 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'phone', 'designation', 'role', 'isSuperAdmin', 'is_active', 'employment_status',
             'joining_date', 'last_working_date', 'employee_code', 'department',
             'useDefaultPermissions', 'permissions', 'extra_permissions', 'denied_permissions', 'effective_permissions',
-            'profilePhoto', 'password', 'subscription', 'organization'
+            'profilePhoto', 'password', 'subscription', 'organization',
+            'bank_name', 'account_number', 'ifsc_code', 'account_holder_name', 'bank_branch', 'upi_id'
         ]
         extra_kwargs = {
             'password': {'write_only': True, 'required': False},
             'username': {'required': False}
         }
+
+    def validate_ifsc_code(self, value):
+        if value:
+            import re
+            cleaned = value.strip().upper()
+            if not re.match(r'^[A-Z]{4}0[A-Z0-9]{6}$', cleaned):
+                raise serializers.ValidationError("Invalid IFSC code format. Expected 4 letters, 0, followed by 6 alphanumeric characters (e.g., HDFC0001234).")
+            return cleaned
+        return value
+
+    def validate_account_number(self, value):
+        if value:
+            cleaned = value.strip().replace(' ', '').replace('-', '')
+            return cleaned
+        return value
 
     def get_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip() or obj.email
@@ -512,6 +528,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
                 existing.role_name = role_obj.name
             existing.organization = target_org
             existing.employment_status = 'Active'
+            existing.is_active = True
             existing.save()
 
             use_default = validated_data.get('useDefaultPermissions', self.initial_data.get('useDefaultPermissions', getattr(existing, 'useDefaultPermissions', True)))
