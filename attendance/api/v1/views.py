@@ -121,13 +121,27 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         if not employee.is_active or getattr(employee, 'employment_status', 'Active') == 'Deactivated':
             return Response({'error': 'Clock In is not available because your employee account is inactive.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        verification_data = request.data.get('verificationData') or {}
+        client_date_str = request.data.get('date') or (verification_data.get('client_date') if isinstance(verification_data, dict) else None)
+        if client_date_str:
+            try:
+                today = datetime_date.fromisoformat(str(client_date_str))
+            except Exception:
+                today = timezone.now().date()
+
         if employee.joining_date and today < employee.joining_date:
             return Response({'error': 'Clock In is not available before your joining date.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if employee.last_working_date and today > employee.last_working_date:
             return Response({'error': 'Clock In is not available after your last working date.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        verification_data = request.data.get('verificationData') or {}
+        org = employee.organization
+        if is_date_locked(org, today):
+            return Response(
+                {'error': f'Attendance for {today.strftime("%B %Y")} is finalized and locked. Reopen the period to make changes.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         coords = verification_data.get('coords', {}) if isinstance(verification_data, dict) else {}
         photo = verification_data.get('photo') if isinstance(verification_data, dict) else None
 
@@ -138,7 +152,6 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
             len(photo) >= 50
         )
 
-        org = employee.organization
         locations = list(OfficeLocation.objects.filter(organization=org))
 
         verification_method = None
@@ -185,14 +198,12 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
                                 is_geofence_verified = True
                                 break
 
-                        if not is_geofence_verified and nearest_loc is not None:
-                            # If within office vicinity (up to 50 km), strict geofence is enforced regardless of photo
-                            if min_dist <= 50000:
-                                dist_km = min_dist / 1000.0
-                                return Response(
-                                    {'error': f"Outside office geofence. You are outside the allowed Clock In area for {nearest_loc.name}. You are {dist_km:.1f} km from the office (allowed radius: {int(nearest_loc.radius)}m)."},
-                                    status=status.HTTP_400_BAD_REQUEST
-                                )
+                        if not is_geofence_verified and nearest_loc is not None and not has_valid_photo:
+                            dist_km = min_dist / 1000.0
+                            return Response(
+                                {'error': f"Outside office geofence. You are outside the allowed Clock In area for {nearest_loc.name} ({dist_km:.1f} km away). Verification photo is required."},
+                                status=status.HTTP_400_BAD_REQUEST
+                            )
                 except (ValueError, TypeError):
                     is_geofence_verified = False
         else:
@@ -218,15 +229,6 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
                 {'error': 'Clock in failed: Verification photo is required when outside office geofence or location is unavailable.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        client_date_str = request.data.get('date') or (verification_data.get('client_date') if isinstance(verification_data, dict) else None)
-        if client_date_str:
-            try:
-                today = datetime_date.fromisoformat(str(client_date_str))
-            except Exception:
-                today = timezone.now().date()
-        else:
-            today = timezone.now().date()
 
         from django.db import transaction
         with transaction.atomic():
@@ -291,9 +293,6 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         log = AttendanceLog.objects.filter(employee=employee, clockOut__isnull=True).order_by('-date', '-id').first()
         if not log:
             return Response({'error': 'No active clock-in session found'}, status=status.HTTP_400_BAD_REQUEST)
-
-        if is_date_locked(employee.organization, log.date):
-            return Response({'error': f'Attendance for {log.date.strftime("%B %Y")} is finalized and locked. Reopen the period to make changes.'}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
         policy = get_attendance_policy(employee.organization, log.date)
@@ -1493,22 +1492,20 @@ class AttendancePeriodViewSet(ActionPermissionMixin, FilterMixinNew, TenantScope
             is_deleted=False
         ).first()
 
-        if not period:
-            return Response([], status=status.HTTP_200_OK)
-
-        qs = AttendancePeriodEmployeeSnapshot.objects.filter(
-            attendance_period=period,
-            is_deleted=False
-        )
-
-        if revision:
-            try:
-                rev_num = int(revision)
-                qs = qs.filter(revision=rev_num)
-            except ValueError:
-                pass
-        else:
-            qs = qs.filter(is_current=True)
+        qs = AttendancePeriodEmployeeSnapshot.objects.none()
+        if period:
+            qs = AttendancePeriodEmployeeSnapshot.objects.filter(
+                attendance_period=period,
+                is_deleted=False
+            )
+            if revision:
+                try:
+                    rev_num = int(revision)
+                    qs = qs.filter(revision=rev_num)
+                except ValueError:
+                    pass
+            else:
+                qs = qs.filter(is_current=True)
 
         user = request.user
         from core.decorators import has_fine_grained_permission
@@ -1518,8 +1515,149 @@ class AttendancePeriodViewSet(ActionPermissionMixin, FilterMixinNew, TenantScope
         elif employee_id:
             qs = qs.filter(employee_id=employee_id)
 
-        serializer = AttendancePeriodEmployeeSnapshotSerializer(qs, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        if qs.exists():
+            serializer = AttendancePeriodEmployeeSnapshotSerializer(qs, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # Fallback for Draft / unfinalized periods: generate dynamic preview from validate_attendance_period
+        try:
+            validation = validate_attendance_period(org, year, month)
+            preview_list = []
+            for item in validation.get('employee_data', []):
+                if not can_view_all and item['employee_id'] != user.id:
+                    continue
+                if employee_id and str(item['employee_id']) != str(employee_id):
+                    continue
+                totals = item.get('totals', {})
+                preview_list.append({
+                    'id': f"draft-{item['employee_id']}",
+                    'employee': item['employee_id'],
+                    'employee_name': item['employee_name'],
+                    'designation': item['designation'],
+                    'revision': 0,
+                    'is_current': True,
+                    'working_days': totals.get('working_days', 0),
+                    'present_days': totals.get('present_days', 0),
+                    'half_days': totals.get('half_days', 0),
+                    'absent_days': totals.get('absent_days', 0),
+                    'leave_days': totals.get('leave_days', 0),
+                    'paid_leave_days': str(totals.get('paid_leave_days', 0.0)),
+                    'unpaid_leave_days': str(totals.get('unpaid_leave_days', 0.0)),
+                    'payable_attendance_units': totals.get('payable_attendance_units', 0.0),
+                    'late_count': totals.get('late_count', 0),
+                    'total_late_minutes': totals.get('total_late_minutes', 0),
+                    'total_worked_minutes': totals.get('total_worked_minutes', 0),
+                    'status': 'Draft'
+                })
+            return Response(preview_list, status=status.HTTP_200_OK)
+        except Exception:
+            return Response([], status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='yearly-summary')
+    def yearly_summary(self, request):
+        """
+        GET /api/attendance/periods/yearly-summary/?year=2026
+        Returns 12-month attendance matrix & annual totals for all active employees.
+        """
+        year = request.query_params.get('year')
+        try:
+            year = int(year) if year else timezone.now().year
+        except ValueError:
+            year = timezone.now().year
+
+        org = request.user.organization
+        if not org:
+            return Response([], status=status.HTTP_200_OK)
+
+        user = request.user
+        from core.decorators import has_fine_grained_permission
+        can_view_all = has_fine_grained_permission(user, ['attendance:admin', 'attendance:management_portal'])
+
+        active_employees = Employee.objects.filter(
+            organization=org,
+            is_active=True
+        ).order_by('first_name', 'last_name')
+
+        if not can_view_all:
+            active_employees = active_employees.filter(id=user.id)
+
+        snaps = AttendancePeriodEmployeeSnapshot.objects.filter(
+            attendance_period__organization=org,
+            attendance_period__year=year,
+            is_current=True
+        ).select_related('attendance_period', 'employee')
+
+        snaps_by_emp = {}
+        for s in snaps:
+            m = s.attendance_period.month
+            snaps_by_emp.setdefault(s.employee_id, {})[m] = s
+
+        result = []
+        for emp in active_employees:
+            emp_snaps = snaps_by_emp.get(emp.id, {})
+            emp_name = f"{emp.first_name} {emp.last_name}".strip() or emp.email
+            
+            months_data = []
+            total_working = 0
+            total_present = 0
+            total_leave = 0
+            total_absent = 0
+            total_late = 0
+
+            for m in range(1, 13):
+                s = emp_snaps.get(m)
+                if s:
+                    working = s.working_days or 0
+                    present = s.present_days or 0
+                    leave = s.leave_days or 0
+                    absent = s.absent_days or 0
+                    late = s.late_count or 0
+                    
+                    total_working += working
+                    total_present += present
+                    total_leave += leave
+                    total_absent += absent
+                    total_late += late
+                    rate = round((present / working * 100), 1) if working > 0 else 100.0
+
+                    months_data.append({
+                        'month': m,
+                        'has_data': True,
+                        'working_days': working,
+                        'present_days': present,
+                        'leave_days': leave,
+                        'absent_days': absent,
+                        'late_count': late,
+                        'attendance_rate': rate,
+                    })
+                else:
+                    months_data.append({
+                        'month': m,
+                        'has_data': False,
+                        'working_days': 0,
+                        'present_days': 0,
+                        'leave_days': 0,
+                        'absent_days': 0,
+                        'late_count': 0,
+                        'attendance_rate': None,
+                    })
+
+            annual_rate = round((total_present / total_working * 100), 1) if total_working > 0 else (100.0 if total_present > 0 else 0.0)
+
+            result.append({
+                'employee_id': emp.id,
+                'employee_name': emp_name,
+                'designation': emp.designation or '',
+                'total_working_days': total_working,
+                'total_present_days': total_present,
+                'total_leave_days': total_leave,
+                'total_absent_days': total_absent,
+                'total_late_count': total_late,
+                'annual_attendance_rate': annual_rate,
+                'months': months_data
+            })
+
+        return Response(result, status=status.HTTP_200_OK)
 
 
 
