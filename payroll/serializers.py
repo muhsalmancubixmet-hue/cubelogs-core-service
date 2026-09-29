@@ -3,6 +3,7 @@
 # --------------------------------------------------------------------------------
 
 from rest_framework import serializers
+from django.db.models import Sum
 from payroll.models import (
     SalaryComponent,
     EmployeeSalaryStructure,
@@ -165,12 +166,17 @@ class PayrollEmployeeSnapshotSerializer(serializers.ModelSerializer):
     payslip_id = serializers.SerializerMethodField()
     payment_status = serializers.SerializerMethodField()
     payment_details = serializers.SerializerMethodField()
+    bank_name = serializers.CharField(source='employee.bank_name', read_only=True)
+    account_number = serializers.CharField(source='employee.account_number', read_only=True)
+    ifsc_code = serializers.CharField(source='employee.ifsc_code', read_only=True)
+    upi_id = serializers.CharField(source='employee.upi_id', read_only=True)
 
     class Meta:
         model = PayrollEmployeeSnapshot
         fields = [
             'id', 'payroll_period', 'revision', 'is_current',
             'employee', 'employee_name', 'designation',
+            'bank_name', 'account_number', 'ifsc_code', 'upi_id',
             'salary_structure', 'salary_effective_from', 'compensation_type', 'daily_rate', 'hourly_rate', 'currency',
             'working_days', 'payable_attendance_units', 'payable_hours',
             'paid_leave_days', 'unpaid_leave_days', 'absent_days',
@@ -203,6 +209,8 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
     calculated_by_name = serializers.SerializerMethodField()
     finalized_by_name = serializers.SerializerMethodField()
     reopened_by_name = serializers.SerializerMethodField()
+    paid_count = serializers.SerializerMethodField()
+    total_paid_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = PayrollPeriod
@@ -213,6 +221,7 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
             'total_base_gross', 'total_attendance_deductions',
             'total_earned_gross', 'total_base_deductions',
             'total_adjustments_net', 'total_net_payable',
+            'paid_count', 'total_paid_amount',
             'calculated_at', 'calculated_by', 'calculated_by_name',
             'finalized_at', 'finalized_by', 'finalized_by_name',
             'reopen_reason', 'reopened_at', 'reopened_by', 'reopened_by_name',
@@ -234,6 +243,13 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
         if obj.reopened_by:
             return f"{obj.reopened_by.first_name} {obj.reopened_by.last_name}".strip() or obj.reopened_by.email
         return None
+
+    def get_paid_count(self, obj):
+        return obj.salary_payments.filter(status='Paid', is_deleted=False).count()
+
+    def get_total_paid_amount(self, obj):
+        val = obj.salary_payments.filter(status='Paid', is_deleted=False).aggregate(total=Sum('paid_amount'))['total']
+        return str(val) if val is not None else "0.00"
 
 
 class PayslipSerializer(serializers.ModelSerializer):
