@@ -94,7 +94,12 @@ def has_fine_grained_permission(user, permissions, project=None, active_membersh
     """
     if not (user and user.is_authenticated):
         return False
-    if user.is_superuser or getattr(user, 'isSuperAdmin', False):
+    if (
+        user.is_superuser or
+        getattr(user, 'isSuperAdmin', False) or
+        getattr(user, 'role_name', None) in ['Super Admin', 'System Admin', 'Admin', 'Company Admin'] or
+        getattr(user, 'designation', None) in ['Super Admin', 'System Admin', 'Admin']
+    ):
         return True
 
     if not active_membership and hasattr(user, 'active_membership'):

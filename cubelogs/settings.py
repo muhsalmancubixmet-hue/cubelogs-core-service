@@ -377,7 +377,7 @@ SIMPLE_JWT = {
 # Configures language mappings, local timezone boundaries, and localization.
 # ------------------------------------------------------------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = env('TIME_ZONE', default='Asia/Kolkata')
 USE_I18N = True
 USE_TZ = True
 

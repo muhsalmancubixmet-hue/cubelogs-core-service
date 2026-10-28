@@ -420,6 +420,30 @@ class AttendanceApprovalView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if new_status == 'Approved':
+            # Attendance should not be approved immediately upon clock-in.
+            # Must only be approved after clock-out or after scheduled shift end time.
+            if log.clockOut is None and log.date == timezone.localdate():
+                from attendance.models import Schedule
+                schedule = Schedule.objects.filter(
+                    organization=active_org,
+                    designation=log.employee.designation,
+                    is_deleted=False
+                ).first() if getattr(log.employee, 'designation', None) else None
+                shift_end = schedule.shiftEnd if schedule else "17:00"
+                try:
+                    now_time = timezone.localtime().time()
+                    end_h, end_m = map(int, shift_end.split(':'))
+                    from datetime import time as dt_time
+                    shift_end_time = dt_time(hour=end_h, minute=end_m)
+                    if now_time < shift_end_time:
+                        return Response(
+                            {'error': f"Attendance cannot be approved while shift is still in progress. Please approve after employee clocks out or after shift end time ({shift_end})."},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                except Exception:
+                    pass
+
         old_status = log.status
         log.status = new_status
         log.save()
@@ -510,6 +534,8 @@ class HRAttendanceDashboardView(APIView):
                         'employeeName': summary['employee_name'],
                         'employeeDesignation': emp.designation or '',
                         'clockIn': pl.clockIn.isoformat() if pl.clockIn else None,
+                        'clockOut': pl.clockOut.isoformat() if pl.clockOut else None,
+                        'shiftEnd': summary.get('shift_end') or '17:00',
                         'status': 'Pending Approval',
                     })
 

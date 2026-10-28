@@ -249,7 +249,13 @@ class Employee(AbstractUser):
         """
         effective_role = active_membership.role if (active_membership and active_membership.role) else self.role
 
-        if self.is_superuser or self.isSuperAdmin or (effective_role and effective_role.slug in ['super-admin', 'company-admin']) or self.role_name in ['Super Admin', 'Company Admin', 'Admin']:
+        if (
+            self.is_superuser or
+            self.isSuperAdmin or
+            (effective_role and effective_role.slug in ['super-admin', 'company-admin', 'system-admin', 'admin']) or
+            self.role_name in ['Super Admin', 'Company Admin', 'Admin', 'System Admin'] or
+            getattr(self, 'designation', None) in ['Super Admin', 'System Admin', 'Admin']
+        ):
             from users.roles import ALL_PERMISSION_KEYS
             return ALL_PERMISSION_KEYS
 
@@ -282,7 +288,13 @@ class Employee(AbstractUser):
         """
         effective_role = active_membership.role if (active_membership and active_membership.role) else self.role
 
-        if self.is_superuser or self.isSuperAdmin or (effective_role and effective_role.slug in ['super-admin', 'company-admin']) or self.role_name in ['Super Admin', 'Company Admin', 'Admin']:
+        if (
+            self.is_superuser or
+            self.isSuperAdmin or
+            (effective_role and effective_role.slug in ['super-admin', 'company-admin', 'system-admin', 'admin']) or
+            self.role_name in ['Super Admin', 'Company Admin', 'Admin', 'System Admin'] or
+            getattr(self, 'designation', None) in ['Super Admin', 'System Admin', 'Admin']
+        ):
             return True
 
         if project is not None:
