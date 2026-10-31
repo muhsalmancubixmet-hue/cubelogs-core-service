@@ -253,6 +253,15 @@ def save_attendance_policy(organization, policy_data, save_date=None):
         policy.auto_approve_attendance = auto_approve
         policy.save()
 
+    # Ensure current active policy also reflects the updated minimum session duration so live operations work immediately
+    current_active_policy = AttendancePolicy.objects.filter(
+        organization=organization,
+        effective_from__lte=save_date
+    ).order_by('-effective_from').first()
+    if current_active_policy and current_active_policy.id != policy.id:
+        current_active_policy.minimum_session_minutes = min_session
+        current_active_policy.save(update_fields=['minimum_session_minutes'])
+
     # Synchronize legacy OrgSettings as compatibility cache
     if hasattr(organization, 'settings') and organization.settings:
         org_settings = organization.settings
@@ -299,7 +308,7 @@ def get_daily_attendance_summary(employee, target_date, policy=None, schedule=UN
     if schedule is UNSET:
         schedule = Schedule.objects.filter(
             organization=org,
-            designation=employee.designation,
+            designation__iexact=employee.designation,
             is_deleted=False
         ).first() if (org and getattr(employee, 'designation', None)) else None
 

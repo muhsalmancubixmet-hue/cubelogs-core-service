@@ -233,7 +233,7 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         from django.db import transaction
         with transaction.atomic():
             # Check if already clocked in today (and not clocked out)
-            active_log = AttendanceLog.objects.select_for_update().filter(employee=employee, clockOut__isnull=True).first()
+            active_log = AttendanceLog.objects.select_for_update().filter(employee=employee, date=today, clockOut__isnull=True).first()
             if active_log:
                 return Response({'error': 'Already clocked in today'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -295,7 +295,7 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
             return Response({'error': 'No active clock-in session found'}, status=status.HTTP_400_BAD_REQUEST)
 
         now = timezone.now()
-        policy = get_attendance_policy(employee.organization, log.date)
+        policy = AttendancePolicy.objects.filter(organization=employee.organization).order_by('-effective_from').first() or get_attendance_policy(employee.organization, log.date)
         min_session_minutes = policy.minimum_session_minutes if policy else 5
 
         # Check minimum session duration before clocking out
@@ -373,7 +373,24 @@ class AttendanceLogViewSet(ActionPermissionMixin, FilterMixinNew, TenantScopedVi
         if is_date_locked(org, orig_date) or is_date_locked(org, new_date):
             from rest_framework.exceptions import ValidationError
             raise ValidationError({'detail': 'Attendance for this period is finalized and locked. Reopen the period to make changes.'})
-        super().perform_update(serializer)
+        instance = serializer.save()
+        if instance.clockIn and instance.clockOut:
+            duration_seconds = max(0, int((instance.clockOut - instance.clockIn).total_seconds()))
+            instance.totalDuration = str(duration_seconds)
+            instance.save(update_fields=['totalDuration'])
+        elif not instance.clockOut:
+            instance.totalDuration = None
+            instance.save(update_fields=['totalDuration'])
+
+        # Record AuditLog for attendance adjustment/override
+        actor_name = f"{user.first_name} {user.last_name}".strip() or user.email if user and user.is_authenticated else "Admin"
+        AuditLog.objects.create(
+            organization=org or instance.employee.organization,
+            employee=user if user and user.is_authenticated else None,
+            employeeName=actor_name,
+            action="Attendance Override",
+            details=f"Overrode clock log #{instance.id} for {instance.employeeName} on {instance.date}."
+        )
 
     def perform_destroy(self, instance):
         user = self.request.user
@@ -989,7 +1006,7 @@ class AttendancePolicyViewSet(ActionPermissionMixin, FilterMixinNew, TenantScope
                 'is_new_version': created
             }, status=status.HTTP_200_OK)
 
-        policy = get_attendance_policy(org)
+        policy = AttendancePolicy.objects.filter(organization=org).order_by('-effective_from').first() or get_attendance_policy(org)
         serializer = self.get_serializer(policy)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1082,12 +1099,19 @@ class AuditLogViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.all().order_by('-createdAt', '-id')
     serializer_class = AuditLogSerializer
     permission_classes = [permissions.IsAuthenticated, DRFCheckModePermission, HasRequiredPermission]
-    required_permission = 'audit_logs:view'
+    required_permission = ['audit_logs:view', 'attendance:admin', 'attendance:management_portal']
 
     def get_queryset(self):
         qs = super().get_queryset()
         user = self.request.user
-        if not user.isSuperAdmin:
+        from core.decorators import has_fine_grained_permission
+        is_admin_or_manager = (
+            user.isSuperAdmin or
+            getattr(user, 'is_superuser', False) or
+            getattr(user, 'is_staff', False) or
+            has_fine_grained_permission(user, ['audit_logs:view', 'attendance:admin', 'attendance:management_portal'])
+        )
+        if not is_admin_or_manager:
             qs = qs.filter(employee=user)
         else:
             employee_id = self.request.query_params.get('employee_id')
@@ -1095,6 +1119,7 @@ class AuditLogViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
             date_str = self.request.query_params.get('date')
             org_id = self.request.query_params.get('organization_id')
             search_q = self.request.query_params.get('search')
+            module_param = self.request.query_params.get('module')
 
             if org_id and user.organization is None:
                 qs = qs.filter(organization_id=org_id)
@@ -1108,6 +1133,14 @@ class AuditLogViewSet(TenantScopedViewSetMixin, viewsets.ReadOnlyModelViewSet):
                     qs = qs.filter(createdAt__date=target_date)
                 except ValueError:
                     pass
+            if module_param == 'attendance':
+                attendance_actions = [
+                    'Clocked In', 'Clocked Out', 'Attendance Status Updated',
+                    'Attendance Override', 'Attendance Period Finalized',
+                    'Attendance Period Reopened', 'Clock-Out Attempt Rejected',
+                    'Leave Applied', 'Leave Status Updated'
+                ]
+                qs = qs.filter(action__in=attendance_actions)
             if search_q:
                 qs = qs.filter(
                     Q(action__icontains=search_q) |
