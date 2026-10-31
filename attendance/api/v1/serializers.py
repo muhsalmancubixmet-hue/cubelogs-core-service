@@ -21,9 +21,22 @@ from attendance.services import get_attendance_policy, save_attendance_policy
 
 
 class AttendanceLogSerializer(serializers.ModelSerializer):
+    minimum_session_minutes = serializers.SerializerMethodField()
+
     class Meta:
         model = AttendanceLog
         fields = '__all__'
+
+    def get_minimum_session_minutes(self, obj):
+        try:
+            org = obj.employee.organization if obj.employee else None
+            if org:
+                policy = AttendancePolicy.objects.filter(organization=org).order_by('-effective_from').first() or get_attendance_policy(org, obj.date)
+                if policy and policy.minimum_session_minutes is not None:
+                    return policy.minimum_session_minutes
+        except Exception:
+            pass
+        return 5
 
     def create(self, validated_data):
         if 'employeeName' not in validated_data or not validated_data['employeeName']:
@@ -102,6 +115,8 @@ class OrgSettingsSerializer(serializers.ModelSerializer):
     break_type = serializers.CharField(required=False, default='Unpaid')
     policy_effective_from = serializers.DateField(read_only=True, required=False)
 
+    default_weekly_holidays = serializers.JSONField(required=False)
+
     class Meta:
         model = OrgSettings
         fields = [
@@ -111,7 +126,7 @@ class OrgSettingsSerializer(serializers.ModelSerializer):
             'grace_period_minutes', 'half_day_threshold_minutes', 'full_day_absent_threshold_minutes',
             'auto_approve_attendance', 'full_day_minimum_minutes', 'half_day_minimum_minutes',
             'minimum_session_minutes',
-            'break_duration_minutes', 'break_type', 'policy_effective_from',
+            'break_duration_minutes', 'break_type', 'policy_effective_from', 'default_weekly_holidays',
             'payroll_currency', 'payroll_proration_basis', 'daily_wage_paid_leave_eligible',
             'hourly_wage_paid_leave_eligible',
             'company_address', 'company_phone', 'company_email', 'billing_email', 'company_tax_id',
@@ -143,7 +158,7 @@ class OrgSettingsSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         if hasattr(instance, 'organization') and instance.organization:
             data['companyName'] = instance.organization.name
-            policy = get_attendance_policy(instance.organization)
+            policy = AttendancePolicy.objects.filter(organization=instance.organization).order_by('-effective_from').first() or get_attendance_policy(instance.organization)
             if policy:
                 data['grace_period_minutes'] = policy.grace_period_minutes
                 data['half_day_threshold_minutes'] = policy.half_day_minimum_minutes
@@ -204,7 +219,7 @@ class OrgSettingsSerializer(serializers.ModelSerializer):
 
             if policy_payload:
                 # Fill missing policy values from current active policy to avoid resetting them
-                current_policy = get_attendance_policy(org)
+                current_policy = AttendancePolicy.objects.filter(organization=org).order_by('-effective_from').first() or get_attendance_policy(org)
                 if current_policy:
                     policy_payload.setdefault('grace_period_minutes', current_policy.grace_period_minutes)
                     policy_payload.setdefault('full_day_minimum_minutes', current_policy.full_day_minimum_minutes)
