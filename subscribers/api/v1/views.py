@@ -1258,7 +1258,7 @@ class BackofficeOrganizationListView(APIView):
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
         from users.models import OrganizationMembership, Employee
-        orgs = Organization.objects.filter(is_deleted=False).select_related('settings').order_by('-id')
+        orgs = Organization.objects.all().select_related('settings').order_by('-id')
         org_list = []
         for org in orgs:
             settings = getattr(org, 'settings', None)
@@ -1270,7 +1270,9 @@ class BackofficeOrganizationListView(APIView):
                     modules.append('Project & Tasks Management')
             modules_str = ', '.join(modules) if modules else 'Core Package'
 
-            mems = OrganizationMembership.objects.filter(organization=org, is_deleted=False)
+            mems = OrganizationMembership.objects.filter(organization=org)
+            if not org.is_deleted:
+                mems = mems.filter(is_deleted=False)
             members_count = mems.count()
 
             owner_mem = mems.filter(user__isSuperAdmin=True).select_related('user').first() or mems.select_related('user').first()
@@ -1278,7 +1280,7 @@ class BackofficeOrganizationListView(APIView):
             owner_name = f"{owner_mem.user.first_name} {owner_mem.user.last_name}".strip() or getattr(owner_mem.user, 'username', '') if (owner_mem and owner_mem.user) else ''
 
             if not owner_email:
-                direct_emp = Employee.objects.filter(organization=org, is_active=True).first()
+                direct_emp = Employee.objects.filter(organization=org).first()
                 if direct_emp:
                     owner_email = direct_emp.email
                     owner_name = f"{direct_emp.first_name} {direct_emp.last_name}".strip() or direct_emp.username
@@ -1287,7 +1289,10 @@ class BackofficeOrganizationListView(APIView):
 
             created_at_val = org.created_at.strftime('%Y-%m-%d %H:%M') if org.created_at else ''
             expires_at_val = settings.subscriptionExpiresAt.strftime('%Y-%m-%d') if (settings and settings.subscriptionExpiresAt) else 'Lifetime'
-            status_val = settings.subscriptionStatus if settings else 'Active'
+            if org.is_deleted:
+                status_val = 'Deleted'
+            else:
+                status_val = settings.subscriptionStatus if settings else 'Active'
             subscription_days = settings.subscriptionDays if settings else 0
 
             org_list.append({
@@ -1299,6 +1304,7 @@ class BackofficeOrganizationListView(APIView):
                 'modules': modules_str,
                 'members_count': members_count,
                 'status': status_val,
+                'is_deleted': org.is_deleted,
                 'expires_at': expires_at_val,
                 'subscription_days': subscription_days,
                 'created_at': created_at_val,
@@ -1364,7 +1370,8 @@ class BackofficeOrganizationDetailView(APIView):
             'name': org.name,
             'subdomain': org.subdomain or '',
             'created_at': org.created_at.strftime('%Y-%m-%d %H:%M:%S') if org.created_at else '—',
-            'subscription_status': settings.subscriptionStatus if settings else 'Active',
+            'subscription_status': 'Deleted' if org.is_deleted else (settings.subscriptionStatus if settings else 'Active'),
+            'is_deleted': org.is_deleted,
             'subscription_days': settings.subscriptionDays if settings else 0,
             'subscription_expires_at': settings.subscriptionExpiresAt.strftime('%Y-%m-%d') if (settings and settings.subscriptionExpiresAt) else 'Lifetime',
             'max_employees': settings.max_employees_allowed if settings else 10,
