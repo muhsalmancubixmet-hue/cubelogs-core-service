@@ -1312,6 +1312,127 @@ class BackofficeOrganizationListView(APIView):
         return Response(org_list, status=status.HTTP_200_OK)
 
 
+def purge_organization_cascade(org):
+    """
+    Safely and permanently purges an organization and all its dependent resources
+    across all modules in reverse dependency order to prevent ProtectedError.
+    """
+    # 1. Storage Billing
+    try:
+        from storage_billing.models import StorageEvent, StorageFile, StorageDailyUsage
+        StorageEvent.objects.filter(organization=org).delete()
+        StorageFile.objects.filter(organization=org).delete()
+        StorageDailyUsage.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Storage cleanup: {e}")
+
+    # 2. Payroll
+    try:
+        from payroll.models import (
+            SalaryPayment, Payslip, PayrollAdjustment, PayrollPeriod,
+            EmployeeSalaryStructure, EmployeeSalaryComponent, SalaryComponent
+        )
+        SalaryPayment.objects.filter(organization=org).delete()
+        Payslip.objects.filter(organization=org).delete()
+        PayrollAdjustment.objects.filter(organization=org).delete()
+        PayrollPeriod.objects.filter(organization=org).delete()
+        EmployeeSalaryComponent.objects.filter(salary_structure__organization=org).delete()
+        EmployeeSalaryStructure.objects.filter(organization=org).delete()
+        SalaryComponent.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Payroll cleanup: {e}")
+
+    # 3. Attendance
+    try:
+        from attendance.models import (
+            AttendancePeriodEmployeeSnapshot, AttendancePeriod,
+            AttendanceLog, Leave, LeaveType,
+            Holiday, OfficeLocation, Schedule, AttendancePolicy
+        )
+        AttendancePeriodEmployeeSnapshot.objects.filter(attendance_period__organization=org).delete()
+        AttendancePeriod.objects.filter(organization=org).delete()
+        AttendanceLog.objects.filter(employee__organization=org).delete()
+        Leave.objects.filter(employee__organization=org).delete()
+        LeaveType.objects.filter(organization=org).delete()
+        Holiday.objects.filter(organization=org).delete()
+        OfficeLocation.objects.filter(organization=org).delete()
+        Schedule.objects.filter(organization=org).delete()
+        AttendancePolicy.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Attendance cleanup: {e}")
+
+    # 4. Projects (bottom-up deletion to avoid circular status protection)
+    try:
+        from projects.models import (
+            ProjectComment, ProjectAttachment, ProjectActivity, ProjectSubtask,
+            ProjectTask, ProjectStoryMember, ProjectStory, ProjectSprintEvent,
+            ProjectSprint, ProjectRetrospectiveItem, ProjectRetrospective,
+            ProjectMember, Project, ProjectEpic, ProjectStatusOption
+        )
+        ProjectComment.objects.filter(story__project__company=org).delete()
+        ProjectComment.objects.filter(task__story__project__company=org).delete()
+        ProjectComment.objects.filter(subtask__task__story__project__company=org).delete()
+        ProjectComment.objects.filter(epic__company=org).delete()
+        ProjectAttachment.objects.filter(company=org).delete()
+        ProjectAttachment.objects.filter(project__company=org).delete()
+        ProjectAttachment.objects.filter(epic__company=org).delete()
+        ProjectAttachment.objects.filter(story__project__company=org).delete()
+        ProjectAttachment.objects.filter(task__story__project__company=org).delete()
+        ProjectActivity.objects.filter(project__company=org).delete()
+        ProjectSubtask.objects.filter(task__story__project__company=org).delete()
+        ProjectTask.objects.filter(story__project__company=org).delete()
+        ProjectStoryMember.objects.filter(story__project__company=org).delete()
+        ProjectStory.objects.filter(project__company=org).delete()
+        ProjectSprintEvent.objects.filter(sprint__project__company=org).delete()
+        ProjectSprint.objects.filter(project__company=org).delete()
+        ProjectRetrospectiveItem.objects.filter(retrospective__project__company=org).delete()
+        ProjectRetrospective.objects.filter(project__company=org).delete()
+        ProjectMember.objects.filter(project__company=org).delete()
+        Project.objects.filter(company=org).delete()
+        ProjectEpic.objects.filter(company=org).delete()
+        ProjectStatusOption.objects.filter(company=org).delete()
+    except Exception as e:
+        logger.warning(f"Projects cleanup: {e}")
+
+    # 5. Wallets & Invoices
+    try:
+        from subscribers.models import Wallet, WalletTransaction, MonthlyInvoice
+        WalletTransaction.objects.filter(wallet__organization=org).delete()
+        Wallet.objects.filter(organization=org).delete()
+        MonthlyInvoice.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Wallets cleanup: {e}")
+
+    # 6. Users & Memberships
+    try:
+        from users.models import (
+            EmployeeProfile, OrganizationMembership, Role, Template, Employee
+        )
+        EmployeeProfile.objects.filter(organization=org).delete()
+        OrganizationMembership.objects.filter(organization=org).delete()
+        Role.objects.filter(organization=org).delete()
+        Template.objects.filter(organization=org).delete()
+        Employee.objects.filter(organization=org).update(organization=None)
+    except Exception as e:
+        logger.warning(f"Users cleanup: {e}")
+
+    # 7. Core Modules & Settings
+    try:
+        from core.models import OrganizationModule, AuditLog
+        OrganizationModule.objects.filter(organization=org).delete()
+        AuditLog.objects.filter(organization=org).delete()
+        if getattr(org, 'settings', None):
+            try:
+                org.settings.delete()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Core cleanup: {e}")
+
+    # 8. Delete organization permanently
+    org.hard_delete()
+
+
 class BackofficeOrganizationDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -1333,7 +1454,9 @@ class BackofficeOrganizationDetailView(APIView):
             if settings.is_project_enabled:
                 modules.append('Project & Tasks Management')
 
-        mems = OrganizationMembership.objects.filter(organization=org, is_deleted=False).select_related('user', 'role')
+        mems = OrganizationMembership.objects.filter(organization=org).select_related('user', 'role')
+        if not org.is_deleted:
+            mems = mems.filter(is_deleted=False)
         members_data = []
         seen_user_ids = set()
         for m in mems:
@@ -1391,52 +1514,19 @@ class BackofficeOrganizationDetailView(APIView):
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
         from django.db import transaction
-        from users.models import OrganizationMembership, Employee
         org = Organization.objects.filter(id=pk).first()
         if not org:
             return Response({'error': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         org_name = org.name
 
-        with transaction.atomic():
-            # Clean storage billing protected records to prevent ProtectedError
-            try:
-                from storage_billing.models import StorageEvent, StorageFile, StorageDailyUsage
-                StorageEvent.objects.filter(organization=org).delete()
-                StorageFile.objects.filter(organization=org).delete()
-                StorageDailyUsage.objects.filter(organization=org).delete()
-            except Exception as e:
-                logger.warning(f"Storage cleanup note for org {org.id}: {e}")
-
-            # Clean memberships and unbind direct employees
-            OrganizationMembership.objects.filter(organization=org).delete()
-            Employee.objects.filter(organization=org).update(organization=None)
-
-            # Clean org modules
-            try:
-                from core.models import OrganizationModule
-                OrganizationModule.objects.filter(organization=org).delete()
-            except Exception:
-                pass
-
-            # Clean audit logs
-            try:
-                from core.models import AuditLog
-                AuditLog.objects.filter(organization=org).delete()
-            except Exception:
-                pass
-
-            # Clean org settings
-            if getattr(org, 'settings', None):
-                try:
-                    org.settings.delete()
-                except Exception:
-                    pass
-
-            # Delete organization permanently
-            org.hard_delete()
-
-        return Response({'success': True, 'message': f'Company "{org_name}" has been permanently removed.'}, status=status.HTTP_200_OK)
+        try:
+            with transaction.atomic():
+                purge_organization_cascade(org)
+            return Response({'success': True, 'message': f'Company "{org_name}" has been permanently removed.'}, status=status.HTTP_200_OK)
+        except Exception as err:
+            logger.exception(f"Failed to delete organization {pk}: {err}")
+            return Response({'error': f'Failed to delete company: {str(err)}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class BackofficeOrganizationMemberRemoveView(APIView):
