@@ -1254,18 +1254,210 @@ class BackofficeOrganizationListView(APIView):
 
     def get(self, request):
         user = request.user
-        if not getattr(user, 'isSuperAdmin', False) or user.organization is not None:
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
-        orgs = Organization.objects.all().order_by('name')
+        from users.models import OrganizationMembership, Employee
+        orgs = Organization.objects.filter(is_deleted=False).select_related('settings').order_by('-id')
         org_list = []
         for org in orgs:
+            settings = getattr(org, 'settings', None)
+            modules = []
+            if settings:
+                if settings.is_attendance_enabled:
+                    modules.append('Attendance Management')
+                if settings.is_project_enabled:
+                    modules.append('Project & Tasks Management')
+            modules_str = ', '.join(modules) if modules else 'Core Package'
+
+            mems = OrganizationMembership.objects.filter(organization=org, is_deleted=False)
+            members_count = mems.count()
+
+            owner_mem = mems.filter(user__isSuperAdmin=True).select_related('user').first() or mems.select_related('user').first()
+            owner_email = owner_mem.user.email if (owner_mem and owner_mem.user) else ''
+            owner_name = f"{owner_mem.user.first_name} {owner_mem.user.last_name}".strip() or getattr(owner_mem.user, 'username', '') if (owner_mem and owner_mem.user) else ''
+
+            if not owner_email:
+                direct_emp = Employee.objects.filter(organization=org, is_active=True).first()
+                if direct_emp:
+                    owner_email = direct_emp.email
+                    owner_name = f"{direct_emp.first_name} {direct_emp.last_name}".strip() or direct_emp.username
+                    if members_count == 0:
+                        members_count = 1
+
+            created_at_val = org.created_at.strftime('%Y-%m-%d %H:%M') if org.created_at else ''
+            expires_at_val = settings.subscriptionExpiresAt.strftime('%Y-%m-%d') if (settings and settings.subscriptionExpiresAt) else 'Lifetime'
+            status_val = settings.subscriptionStatus if settings else 'Active'
+            subscription_days = settings.subscriptionDays if settings else 0
+
             org_list.append({
                 'id': org.id,
                 'name': org.name,
-                'subdomain': org.subdomain,
+                'subdomain': org.subdomain or '',
+                'owner_email': owner_email or '—',
+                'owner_name': owner_name or '—',
+                'modules': modules_str,
+                'members_count': members_count,
+                'status': status_val,
+                'expires_at': expires_at_val,
+                'subscription_days': subscription_days,
+                'created_at': created_at_val,
             })
         return Response(org_list, status=status.HTTP_200_OK)
+
+
+class BackofficeOrganizationDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        user = request.user
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from users.models import OrganizationMembership, Employee
+        org = Organization.objects.filter(id=pk).select_related('settings').first()
+        if not org:
+            return Response({'error': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        settings = getattr(org, 'settings', None)
+        modules = []
+        if settings:
+            if settings.is_attendance_enabled:
+                modules.append('Attendance Management')
+            if settings.is_project_enabled:
+                modules.append('Project & Tasks Management')
+
+        mems = OrganizationMembership.objects.filter(organization=org, is_deleted=False).select_related('user', 'role')
+        members_data = []
+        seen_user_ids = set()
+        for m in mems:
+            if m.user:
+                seen_user_ids.add(m.user.id)
+                members_data.append({
+                    'membership_id': m.id,
+                    'user_id': m.user.id,
+                    'email': m.user.email,
+                    'name': f"{m.user.first_name} {m.user.last_name}".strip() or m.user.username,
+                    'role': m.role.name if m.role else ('Super Admin' if m.user.isSuperAdmin else 'Employee'),
+                    'designation': m.designation or m.user.designation or '—',
+                    'department': m.department or '—',
+                    'is_active_in_org': m.is_active_in_org,
+                    'is_superadmin': getattr(m.user, 'isSuperAdmin', False),
+                })
+
+        direct_emps = Employee.objects.filter(organization=org).exclude(id__in=seen_user_ids)
+        for emp in direct_emps:
+            members_data.append({
+                'membership_id': None,
+                'user_id': emp.id,
+                'email': emp.email,
+                'name': f"{emp.first_name} {emp.last_name}".strip() or emp.username,
+                'role': 'Super Admin' if emp.isSuperAdmin else 'Employee',
+                'designation': emp.designation or '—',
+                'department': '—',
+                'is_active_in_org': emp.is_active,
+                'is_superadmin': emp.isSuperAdmin,
+            })
+
+        detail = {
+            'id': org.id,
+            'name': org.name,
+            'subdomain': org.subdomain or '',
+            'created_at': org.created_at.strftime('%Y-%m-%d %H:%M:%S') if org.created_at else '—',
+            'subscription_status': settings.subscriptionStatus if settings else 'Active',
+            'subscription_days': settings.subscriptionDays if settings else 0,
+            'subscription_expires_at': settings.subscriptionExpiresAt.strftime('%Y-%m-%d') if (settings and settings.subscriptionExpiresAt) else 'Lifetime',
+            'max_employees': settings.max_employees_allowed if settings else 10,
+            'active_modules': modules if modules else ['Core Package'],
+            'company_email': getattr(settings, 'company_email', '') or '—',
+            'company_phone': getattr(settings, 'company_phone', '') or '—',
+            'company_address': getattr(settings, 'company_address', '') or '—',
+            'company_tax_id': getattr(settings, 'company_tax_id', '') or '—',
+            'members': members_data,
+            'total_members': len(members_data),
+        }
+        return Response(detail, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        user = request.user
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from django.db import transaction
+        from users.models import OrganizationMembership, Employee
+        org = Organization.objects.filter(id=pk).first()
+        if not org:
+            return Response({'error': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        org_name = org.name
+
+        with transaction.atomic():
+            # Clean storage billing protected records to prevent ProtectedError
+            try:
+                from storage_billing.models import StorageEvent, StorageFile, StorageDailyUsage
+                StorageEvent.objects.filter(organization=org).delete()
+                StorageFile.objects.filter(organization=org).delete()
+                StorageDailyUsage.objects.filter(organization=org).delete()
+            except Exception as e:
+                logger.warning(f"Storage cleanup note for org {org.id}: {e}")
+
+            # Clean memberships and unbind direct employees
+            OrganizationMembership.objects.filter(organization=org).delete()
+            Employee.objects.filter(organization=org).update(organization=None)
+
+            # Clean org modules
+            try:
+                from core.models import OrganizationModule
+                OrganizationModule.objects.filter(organization=org).delete()
+            except Exception:
+                pass
+
+            # Clean audit logs
+            try:
+                from core.models import AuditLog
+                AuditLog.objects.filter(organization=org).delete()
+            except Exception:
+                pass
+
+            # Clean org settings
+            if getattr(org, 'settings', None):
+                try:
+                    org.settings.delete()
+                except Exception:
+                    pass
+
+            # Delete organization permanently
+            org.hard_delete()
+
+        return Response({'success': True, 'message': f'Company "{org_name}" has been permanently removed.'}, status=status.HTTP_200_OK)
+
+
+class BackofficeOrganizationMemberRemoveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, org_id, membership_id):
+        user = request.user
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from users.models import OrganizationMembership, Employee
+        mem = OrganizationMembership.objects.filter(id=membership_id, organization_id=org_id).first()
+        if not mem:
+            return Response({'error': 'Membership not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        mem_user = mem.user
+        mem_email = mem_user.email if mem_user else 'User'
+        mem.delete()
+
+        # If user has direct organization field set to this org, unbind it or set to remaining membership
+        if mem_user and mem_user.organization_id == org_id:
+            other_mem = OrganizationMembership.objects.filter(user=mem_user, is_active_in_org=True).first()
+            if other_mem:
+                Employee.objects.filter(id=mem_user.id).update(organization_id=other_mem.organization_id)
+            else:
+                Employee.objects.filter(id=mem_user.id).update(organization=None)
+
+        return Response({'success': True, 'message': f'Member {mem_email} removed from company.'}, status=status.HTTP_200_OK)
 
 
 # --------------------------------------------------------------------------------

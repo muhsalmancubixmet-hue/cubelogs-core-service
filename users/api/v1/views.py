@@ -1119,7 +1119,7 @@ def backoffice_view(request):
     if not isinstance(user_perms, list):
         user_perms = []
 
-    all_backoffice_perms = ['packages', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings']
+    all_backoffice_perms = ['packages', 'companies', 'subscribers', 'payments', 'leads', 'cms', 'faqs', 'testimonials', 'coupons', 'staff', 'audit_logs', 'billing_settings']
     has_any_backoffice_perm = any(p in user_perms for p in all_backoffice_perms)
     if not has_any_backoffice_perm or request.user.is_superuser or request.user.organization is not None:
         user_perms = all_backoffice_perms
@@ -1174,7 +1174,7 @@ def backoffice_logout_view(request):
 
 class CustomTokenRefreshView(TokenRefreshView):
     serializer_class = CustomTokenRefreshSerializer
-    throttle_classes = [AuthRateThrottle]
+    throttle_classes = []
 
 
 class LogoutView(APIView):

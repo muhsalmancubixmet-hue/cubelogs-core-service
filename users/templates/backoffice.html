@@ -258,11 +258,15 @@
     /* Main Content Layout */
     .main-container {
       margin-left: 280px;
-      flex: 1;
+      flex: 1 1 0%;
+      min-width: 0;
+      width: calc(100% - 280px);
+      max-width: calc(100% - 280px);
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      padding: 40px;
+      padding: 30px 32px 40px 32px;
+      box-sizing: border-box;
     }
 
     header.dashboard-header {
@@ -317,6 +321,9 @@
       padding: 30px;
       box-shadow: var(--shadow-premium);
       margin-bottom: 30px;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
     }
 
     .panel-header {
@@ -326,6 +333,9 @@
       margin-bottom: 24px;
       border-bottom: 1px solid var(--border);
       padding-bottom: 16px;
+      flex-wrap: wrap;
+      gap: 12px;
+      box-sizing: border-box;
     }
 
     .panel-title {
@@ -427,10 +437,27 @@
     /* Table styles */
     .table-container {
       width: 100%;
+      max-width: 100%;
       overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
       background: var(--surface);
+      box-sizing: border-box;
+    }
+
+    .table-container::-webkit-scrollbar {
+      height: 6px;
+    }
+    .table-container::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    .table-container::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+    .table-container::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
     }
 
     table {
@@ -773,6 +800,8 @@
         margin-left: 0;
         padding: 80px 20px 30px 20px;
         width: 100%;
+        max-width: 100vw;
+        box-sizing: border-box;
       }
     }
 
@@ -928,6 +957,12 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
         </span>
         <span>Storage</span>
+      </div>
+      <div class="nav-link" id="nav-companies" onclick="switchTab('companies')">
+        <span class="nav-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"></path><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"></path><path d="M9 9h1"></path><path d="M9 13h1"></path><path d="M9 17h1"></path><path d="M14 9h1"></path><path d="M14 13h1"></path><path d="M14 17h1"></path></svg>
+        </span>
+        <span>Companies</span>
       </div>
       <div class="nav-link" id="nav-subscribers" onclick="switchTab('subscribers')">
         <span class="nav-icon">
@@ -1209,6 +1244,57 @@
             <span id="storage-page-num" style="font-weight: 500; color: var(--text-main);">Page 1 of 1</span>
             <button class="btn btn-sm" id="storage-next-btn" onclick="changeStoragePage(1)" disabled style="padding: 4px 10px; background: #f1f5f9; border: 1px solid var(--border);">Next</button>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: Companies Oversight & Directory -->
+    <section id="tab-companies" class="tab-content">
+      <div class="panel">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+          <div style="flex: 1 1 280px; min-width: 0;">
+            <h2 class="panel-title" style="margin-bottom: 4px;">Registered Tenant Companies</h2>
+            <p style="font-size: 0.85rem; color: var(--text-light); margin: 0;">Comprehensive directory of all organizations on the platform. Inspect active modules, staff size, and manage company records.</p>
+          </div>
+          <div style="display: flex; gap: 10px; align-items: center; flex-shrink: 0; flex-wrap: wrap;">
+            <span class="status-pill active" id="companies-count-badge" style="padding: 6px 14px; font-weight: 700; white-space: nowrap;">0 Companies</span>
+            <button class="btn btn-primary btn-sm" onclick="fetchCompanies()" style="display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div style="margin: 16px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; width: 100%;">
+          <input type="text" id="companies-search-input" placeholder="Search companies by name, subdomain, or owner..." style="flex: 1 1 240px; min-width: 180px; max-width: 440px; padding: 9px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 0.88rem;" oninput="handleCompaniesSearch(this.value)">
+          <select id="filter-companies-status" onchange="renderCompanies()" style="flex: 0 1 160px; min-width: 130px; padding: 9px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 0.88rem; cursor: pointer;">
+            <option value="">All Statuses</option>
+            <option value="Active">Active</option>
+            <option value="Expired">Expired</option>
+            <option value="Restricted">Restricted</option>
+          </select>
+        </div>
+
+        <div class="table-container">
+          <table style="min-width: 840px; width: 100%;">
+            <thead>
+              <tr>
+                <th style="min-width: 160px;">Company / Subdomain</th>
+                <th style="min-width: 160px;">Owner / Super Admin</th>
+                <th style="min-width: 140px;">Active Modules</th>
+                <th style="min-width: 80px;">Team</th>
+                <th style="min-width: 80px;">Status</th>
+                <th style="min-width: 100px;">Expires Date</th>
+                <th style="min-width: 100px;">Created</th>
+                <th style="min-width: 120px; text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="companies-table-body">
+              <tr>
+                <td colspan="8" style="text-align: center; padding: 24px; color: var(--text-light);">Loading companies directory...</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -1874,6 +1960,96 @@
       </div>
     </div>
 
+    <!-- Company Full Details & Management Modal Overlay -->
+    <div id="company-detail-modal" class="modal-backdrop" style="display: none;">
+      <div class="modal-wrapper" style="max-width: 850px; width: 95%; max-height: 90vh; overflow-y: auto;">
+        <button class="modal-close" onclick="closeCompanyDetailsModal()">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+
+        <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 14px;">
+          <div style="width: 44px; height: 44px; border-radius: 10px; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"></path><path d="M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16"></path><path d="M9 9h1"></path><path d="M9 13h1"></path><path d="M9 17h1"></path><path d="M14 9h1"></path><path d="M14 13h1"></path><path d="M14 17h1"></path></svg>
+          </div>
+          <div>
+            <h2 class="panel-title" id="cdm-org-title" style="margin: 0 0 2px 0; border: none; padding: 0;">Company Profile Details</h2>
+            <p id="cdm-org-subtitle" style="font-size: 0.85rem; color: var(--text-light); margin: 0;">Complete tenant configuration and roster details</p>
+          </div>
+        </div>
+
+        <!-- Info Summary Grid -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; margin-bottom: 20px; background: #f8fafc; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px;">
+          <div>
+            <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-light); font-weight: 700;">Subdomain Identifier</div>
+            <div id="cdm-subdomain" style="font-weight: 700; font-size: 0.95rem; margin-top: 3px; color: var(--primary-dark);">—</div>
+          </div>
+          <div>
+            <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-light); font-weight: 700;">Subscription Status</div>
+            <div id="cdm-status" style="margin-top: 3px;">—</div>
+          </div>
+          <div>
+            <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-light); font-weight: 700;">Subscription Expiry</div>
+            <div id="cdm-expiry" style="font-weight: 700; font-size: 0.95rem; margin-top: 3px; color: var(--primary-dark);">—</div>
+          </div>
+          <div>
+            <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-light); font-weight: 700;">Days Remaining</div>
+            <div id="cdm-days" style="font-weight: 700; font-size: 0.95rem; margin-top: 3px; color: var(--primary-dark);">—</div>
+          </div>
+          <div>
+            <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-light); font-weight: 700;">Official Contact Email</div>
+            <div id="cdm-email" style="font-weight: 600; font-size: 0.9rem; margin-top: 3px; word-break: break-all;">—</div>
+          </div>
+          <div>
+            <div style="font-size: 0.72rem; text-transform: uppercase; color: var(--text-light); font-weight: 700;">Phone / Tax ID</div>
+            <div id="cdm-phone" style="font-weight: 600; font-size: 0.9rem; margin-top: 3px;">—</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+          <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--primary-dark); margin-bottom: 8px;">Provisioned Active Modules</h4>
+          <div id="cdm-modules-chips" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+        </div>
+
+        <!-- Associated Personnel Roster Table -->
+        <div style="margin-bottom: 24px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h4 style="font-size: 0.9rem; font-weight: 700; color: var(--primary-dark); margin: 0;">Associated Personnel & Staff (<span id="cdm-staff-count">0</span>)</h4>
+          </div>
+          <div class="table-container" style="max-height: 250px; overflow-y: auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee / Email</th>
+                  <th>Role</th>
+                  <th>Designation</th>
+                  <th>Status</th>
+                  <th style="text-align: right;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="cdm-members-table-body">
+                <tr><td colspan="5" style="text-align: center; padding: 14px;">Loading members...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Danger Zone: Delete Company -->
+        <div style="border-top: 1px solid var(--border); padding-top: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div>
+            <div style="font-size: 0.85rem; font-weight: 700; color: #dc2626;">Danger Zone</div>
+            <div style="font-size: 0.78rem; color: var(--text-light);">Permanently remove this company, associated memberships, and tenant workspace.</div>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button type="button" class="btn btn-secondary" onclick="closeCompanyDetailsModal()">Close</button>
+            <button type="button" class="btn btn-danger" id="cdm-delete-btn" onclick="handleDeleteCompanyFromModal()" style="display: inline-flex; align-items: center; gap: 6px;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              <span>Delete Company</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Tenant Employees Roster Modal Overlay -->
     <div id="tenant-employees-modal" class="modal-backdrop" style="display: none;">
       <div class="modal-wrapper" style="max-width: 850px; width: 95%;">
@@ -2036,6 +2212,7 @@
     // Tabs switching
     function switchTab(tabId) {
       closeMobileSidebar();
+      window.scrollTo({ top: 0, behavior: 'instant' });
 
       // Toggle nav link classes
       document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
@@ -2054,6 +2231,7 @@
       const titleMap = {
         packages: 'Module Management',
         pricing: 'Platform Rates Configuration',
+        companies: 'Company Workspace Oversight & Management',
         storage: 'Global Storage & Usage Oversight',
         subscribers: 'Subscriber Management',
         payments: 'Billing Ledger',
@@ -2082,6 +2260,7 @@
       if (tabId === 'packages') fetchPackages();
       if (tabId === 'pricing') { fetchGlobalPlatformRates(); fetchGlobalStorageSettings(); }
       if (tabId === 'storage') fetchStorageOrganizations(1);
+      if (tabId === 'companies') fetchCompanies();
       if (tabId === 'subscribers') fetchSubscribers();
       if (tabId === 'payments') fetchPayments();
       if (tabId === 'leads') fetchLeads();
@@ -2093,6 +2272,215 @@
       if (tabId === 'email_logs') fetchEmailLogs();
       if (tabId === 'audit_logs') { fetchOrganizations(); fetchAuditLogs(); }
       if (tabId === 'billing_settings') fetchGlobalBillingSettings();
+    }
+
+    // ================================================================
+    // Companies Oversight Logic
+    // ================================================================
+    let allCompaniesList = [];
+    let companiesSearchQuery = '';
+    let currentDetailOrg = null;
+
+    async function fetchCompanies() {
+      const tbody = document.getElementById('companies-table-body');
+      if (!tbody) return;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 24px; color: var(--text-light);">
+        <div style="display: inline-flex; align-items: center; gap: 8px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="spin"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
+          <span>Loading companies directory...</span>
+        </div>
+      </td></tr>`;
+
+      try {
+        const rawData = await apiFetch('/api/backoffice/organizations/');
+        allCompaniesList = normalizeArrayResponse(rawData);
+        renderCompanies();
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #ef4444; padding: 24px;">Failed to load companies: ${escapeHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    function handleCompaniesSearch(val) {
+      companiesSearchQuery = val || '';
+      renderCompanies();
+    }
+
+    function renderCompanies() {
+      const tbody = document.getElementById('companies-table-body');
+      const badge = document.getElementById('companies-count-badge');
+      if (!tbody) return;
+
+      let filtered = allCompaniesList;
+      const statusFilter = document.getElementById('filter-companies-status')?.value;
+      if (statusFilter) {
+        filtered = filtered.filter(c => c.status === statusFilter);
+      }
+
+      if (companiesSearchQuery) {
+        const q = companiesSearchQuery.toLowerCase();
+        filtered = filtered.filter(c =>
+          (c.name && c.name.toLowerCase().includes(q)) ||
+          (c.subdomain && c.subdomain.toLowerCase().includes(q)) ||
+          (c.owner_email && c.owner_email.toLowerCase().includes(q)) ||
+          (c.owner_name && c.owner_name.toLowerCase().includes(q))
+        );
+      }
+
+      if (badge) {
+        badge.textContent = `${filtered.length} ${filtered.length === 1 ? 'Company' : 'Companies'}`;
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; padding: 24px; color: var(--text-light);">No companies found matching criteria.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(c => `
+        <tr style="cursor: pointer;" onclick="viewCompanyDetails(${c.id})">
+          <td>
+            <div style="font-weight: 700; color: var(--primary);">${escapeHtml(c.name)}</div>
+            <div style="font-size: 0.78rem; color: var(--text-light); font-family: monospace;">${escapeHtml(c.subdomain || '—')}</div>
+          </td>
+          <td>
+            <div style="font-weight: 600;">${escapeHtml(c.owner_name || '—')}</div>
+            <div style="font-size: 0.78rem; color: var(--text-light);">${escapeHtml(c.owner_email || '—')}</div>
+          </td>
+          <td>
+            <span style="font-size: 0.8rem; background: var(--primary-light); color: var(--primary); padding: 3px 8px; border-radius: 4px; font-weight: 600;">
+              ${escapeHtml(c.modules || 'Core Package')}
+            </span>
+          </td>
+          <td>
+            <span style="display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 0.85rem;">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg>
+              <span>${c.members_count || 0} Staff</span>
+            </span>
+          </td>
+          <td>
+            <span class="status-pill ${c.status === 'Active' ? 'active' : 'expired'}">${escapeHtml(c.status || 'Active')}</span>
+          </td>
+          <td style="font-size: 0.85rem;">${escapeHtml(c.expires_at || 'Lifetime')}</td>
+          <td style="font-size: 0.82rem; color: var(--text-light);">${escapeHtml(c.created_at || '—')}</td>
+          <td style="text-align: right;" onclick="event.stopPropagation()">
+            <div style="display: inline-flex; gap: 6px;">
+              <button class="btn btn-secondary btn-sm" onclick="viewCompanyDetails(${c.id})" title="Inspect Full Company Details">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                <span>Details</span>
+              </button>
+              <button class="btn btn-danger btn-sm" onclick="deleteCompany(${c.id}, '${escapeHtml(c.name)}')" title="Delete Company">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              </button>
+            </div>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function viewCompanyDetails(orgId) {
+      const modal = document.getElementById('company-detail-modal');
+      if (!modal) return;
+      modal.style.display = 'flex';
+
+      document.getElementById('cdm-org-title').textContent = 'Loading details...';
+      document.getElementById('cdm-org-subtitle').textContent = `Organization ID #${orgId}`;
+      document.getElementById('cdm-members-table-body').innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 14px;">Loading members...</td></tr>`;
+
+      try {
+        const detail = await apiFetch(`/api/backoffice/organizations/${orgId}/`);
+        currentDetailOrg = detail;
+
+        document.getElementById('cdm-org-title').textContent = detail.name || 'Company Profile';
+        document.getElementById('cdm-org-subtitle').textContent = `Organization ID #${detail.id} | Created: ${detail.created_at}`;
+        document.getElementById('cdm-subdomain').textContent = detail.subdomain || '—';
+        document.getElementById('cdm-status').innerHTML = `<span class="status-pill ${detail.subscription_status === 'Active' ? 'active' : 'expired'}">${escapeHtml(detail.subscription_status || 'Active')}</span>`;
+        document.getElementById('cdm-expiry').textContent = detail.subscription_expires_at || 'Lifetime';
+        document.getElementById('cdm-days').textContent = `${detail.subscription_days || 0} Days`;
+        document.getElementById('cdm-email').textContent = detail.company_email || '—';
+        document.getElementById('cdm-phone').textContent = `${detail.company_phone || '—'} / ${detail.company_tax_id || '—'}`;
+
+        const chips = document.getElementById('cdm-modules-chips');
+        if (chips) {
+          chips.innerHTML = (detail.active_modules || ['Core Package']).map(m =>
+            `<span style="background: var(--primary-light); color: var(--primary); padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 0.82rem;">${escapeHtml(m)}</span>`
+          ).join('');
+        }
+
+        const staffCountEl = document.getElementById('cdm-staff-count');
+        if (staffCountEl) staffCountEl.textContent = detail.total_members || 0;
+
+        const tbody = document.getElementById('cdm-members-table-body');
+        if (tbody) {
+          if (!detail.members || detail.members.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 14px; color: var(--text-light);">No members enrolled in this company.</td></tr>`;
+          } else {
+            tbody.innerHTML = detail.members.map(m => `
+              <tr>
+                <td>
+                  <div style="font-weight: 600;">${escapeHtml(m.name)}</div>
+                  <div style="font-size: 0.78rem; color: var(--text-light);">${escapeHtml(m.email)}</div>
+                </td>
+                <td><span style="font-weight: 600; font-size: 0.85rem;">${escapeHtml(m.role || 'Employee')}</span></td>
+                <td style="font-size: 0.85rem;">${escapeHtml(m.designation || '—')}</td>
+                <td>
+                  <span class="status-pill ${m.is_active_in_org ? 'active' : 'expired'}" style="font-size: 0.75rem;">
+                    ${m.is_active_in_org ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td style="text-align: right;">
+                  ${m.membership_id ? `
+                    <button class="btn btn-danger btn-sm" onclick="removeCompanyMember(${detail.id}, ${m.membership_id}, '${escapeHtml(m.email)}')" style="padding: 3px 8px; font-size: 0.75rem;">
+                      Remove
+                    </button>
+                  ` : '—'}
+                </td>
+              </tr>
+            `).join('');
+          }
+        }
+      } catch (err) {
+        alert('Failed to load company details: ' + err.message);
+        closeCompanyDetailsModal();
+      }
+    }
+
+    function closeCompanyDetailsModal() {
+      const modal = document.getElementById('company-detail-modal');
+      if (modal) modal.style.display = 'none';
+      currentDetailOrg = null;
+    }
+
+    async function handleDeleteCompanyFromModal() {
+      if (!currentDetailOrg) return;
+      await deleteCompany(currentDetailOrg.id, currentDetailOrg.name);
+    }
+
+    async function deleteCompany(orgId, orgName) {
+      if (!confirm(`Are you sure you want to permanently delete company "${orgName}"?\nThis will remove the organization and its memberships.`)) {
+        return;
+      }
+      try {
+        await apiFetch(`/api/backoffice/organizations/${orgId}/`, 'DELETE');
+        showNotification(`Company "${orgName}" was deleted successfully.`);
+        closeCompanyDetailsModal();
+        fetchCompanies();
+        if (typeof fetchSubscribers === 'function') fetchSubscribers();
+      } catch (err) {
+        alert('Failed to delete company: ' + err.message);
+      }
+    }
+
+    async function removeCompanyMember(orgId, membershipId, userEmail) {
+      if (!confirm(`Remove ${userEmail} from this company?`)) return;
+      try {
+        await apiFetch(`/api/backoffice/organizations/${orgId}/members/${membershipId}/`, 'DELETE');
+        showNotification(`Member removed successfully.`);
+        if (currentDetailOrg && currentDetailOrg.id === orgId) {
+          viewCompanyDetails(orgId);
+        }
+        fetchCompanies();
+      } catch (err) {
+        alert('Failed to remove member: ' + err.message);
+      }
     }
 
     // 1. Packages Logic
