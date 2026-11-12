@@ -325,11 +325,14 @@ def _build_database_config():
             "Database is not configured. Set DB_ENGINE/DB_NAME (or DATABASE_URL) in .env."
         )
 
-    config['CONN_MAX_AGE'] = env.int('DB_CONN_MAX_AGE', default=60)
     config['CONN_HEALTH_CHECKS'] = env.bool('DB_CONN_HEALTH_CHECKS', default=True)
     config['ATOMIC_REQUESTS'] = False
 
     engine = config.get('ENGINE', '')
+    config['CONN_MAX_AGE'] = env.int(
+        'DB_CONN_MAX_AGE',
+        default=0 if engine == 'django.db.backends.sqlite3' else 60,
+    )
     if 'postgresql' in engine or 'postgis' in engine:
         pg_options = dict(config.get('OPTIONS', {}))
         pg_options.setdefault('connect_timeout', env.int('DB_CONNECT_TIMEOUT', default=10))
@@ -349,10 +352,12 @@ def _build_database_config():
             config['NAME'] = sqlite_override
         config.setdefault('OPTIONS', {})['timeout'] = 20
 
-    if not is_dev and not is_testing and engine == 'django.db.backends.sqlite3':
+    allow_sqlite_in_prod = env.bool('ALLOW_SQLITE_IN_PRODUCTION', default=False)
+    if not is_dev and not is_testing and engine == 'django.db.backends.sqlite3' and not allow_sqlite_in_prod:
         raise ImproperlyConfigured(
             "Production environment detected (ENVIRONMENT != 'development'), but database is configured for SQLite. "
-            "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
+            "PostgreSQL (django.db.backends.postgresql) is required for production deployment "
+            "(or set ALLOW_SQLITE_IN_PRODUCTION=True temporarily)."
         )
 
     return config
