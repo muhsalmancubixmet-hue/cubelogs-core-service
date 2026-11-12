@@ -56,9 +56,21 @@ cover/
 
 # Django stuff:
 *.log
+logs/
 local_settings.py
+*.sqlite3
+*.sqlite3-*
 db.sqlite3*
-celerydb.sqlite3
+celerydb.sqlite3*
+celerybeat-schedule*
+staticfiles/
+
+# Cache & Security
+dump.rdb
+*.pem
+*.key
+.mypy_cache/
+.ruff_cache/
 
 # Flask stuff:
 instance/

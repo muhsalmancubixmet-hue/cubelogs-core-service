@@ -1,5 +1,8 @@
 # STANDARD LIBRARY
+import logging
 import os
+import sys
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
@@ -28,20 +31,29 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ------------------------------------------------------------------------------
 env = environ.Env(
     DEBUG=(bool, False),
+    DJANGO_DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, []),
+    DJANGO_ALLOWED_HOSTS=(list, []),
     CORS_ALLOW_ALL_ORIGINS=(bool, False),
     CORS_ALLOWED_ORIGINS=(list, []),
+    CORS_ALLOW_CREDENTIALS=(bool, True),
     CSRF_TRUSTED_ORIGINS=(list, []),
     EMAIL_PORT=(int, 587),
+    EMAIL_TIMEOUT=(int, 30),
     EMAIL_USE_TLS=(bool, True),
     EMAIL_USE_SSL=(bool, False),
     CELERY_TASK_ALWAYS_EAGER=(bool, False),
+    DB_CONN_MAX_AGE=(int, 60),
+    DB_CONN_HEALTH_CHECKS=(bool, True),
+    DB_CONNECT_TIMEOUT=(int, 10),
+    DB_STATEMENT_TIMEOUT_MS=(int, 0),
 )
 
 environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
-ENVIRONMENT = os.getenv('ENVIRONMENT', 'development').lower()
+ENVIRONMENT = env('ENVIRONMENT', default='development').strip().lower()
 is_dev = ENVIRONMENT == 'development'
+is_testing = 'test' in sys.argv or 'pytest' in sys.modules
 
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000' if is_dev else 'https://cubelogs-dashboard.vercel.app')
 SUPPORT_EMAIL = env('SUPPORT_EMAIL', default='support@cubelogs.com')
@@ -55,9 +67,10 @@ COMPANY_WEBSITE = env('COMPANY_WEBSITE', default='https://cubelogs.com')
 # Contains base security parameters including keys, debug modes, host
 # limits, and CORS origin controls.
 # ------------------------------------------------------------------------------
-SECRET_KEY = env('SECRET_KEY')
-DEBUG = env('DEBUG')
-ALLOWED_HOSTS = env('ALLOWED_HOSTS')
+SECRET_KEY = env('DJANGO_SECRET_KEY', default='').strip() or env('SECRET_KEY')
+DEBUG = env.bool('DJANGO_DEBUG') if 'DJANGO_DEBUG' in os.environ else env.bool('DEBUG', default=False)
+_raw_hosts = env.list('DJANGO_ALLOWED_HOSTS') if 'DJANGO_ALLOWED_HOSTS' in os.environ else env.list('ALLOWED_HOSTS', default=[])
+ALLOWED_HOSTS = [h.strip() for h in _raw_hosts if h.strip()]
 CORS_ALLOW_ALL_ORIGINS = env.bool(
     "CORS_ALLOW_ALL_ORIGINS",
     default=False,
@@ -121,7 +134,7 @@ if is_dev:
         if origin not in CSRF_TRUSTED_ORIGINS:
             CSRF_TRUSTED_ORIGINS.append(origin)
 
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_CREDENTIALS = env.bool('CORS_ALLOW_CREDENTIALS', default=True)
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -154,6 +167,7 @@ EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='muhsalman.cubixmet@gmail.com')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 EMAIL_USE_TLS = env('EMAIL_USE_TLS')
 EMAIL_USE_SSL = env('EMAIL_USE_SSL')
+EMAIL_TIMEOUT = env.int('EMAIL_TIMEOUT', default=30)
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='muhsalman.cubixmet@gmail.com')
 
 # File Upload Configuration
@@ -201,6 +215,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'core.middleware.APICSRFExemptMiddleware',
@@ -215,13 +230,15 @@ ROOT_URLCONF = 'cubelogs.urls'
 WSGI_APPLICATION = 'cubelogs.wsgi.application'
 ASGI_APPLICATION = 'cubelogs.asgi.application'
 
-REDIS_URL = env('REDIS_URL', default=None)
+REDIS_URL = env('REDIS_URL', default='').strip() or None
 if REDIS_URL:
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels_redis.core.RedisChannelLayer',
             'CONFIG': {
-                "hosts": [REDIS_URL],
+                'hosts': [REDIS_URL],
+                'capacity': env.int('CHANNEL_LAYER_CAPACITY', default=1500),
+                'expiry': env.int('CHANNEL_LAYER_EXPIRY', default=60),
             },
         },
     }
@@ -229,6 +246,24 @@ else:
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        },
+    }
+
+CACHE_URL = env('CACHE_URL', default='').strip() or REDIS_URL
+if CACHE_URL and not is_testing:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': CACHE_URL,
+            'KEY_PREFIX': env('CACHE_KEY_PREFIX', default='cubelogs'),
+            'TIMEOUT': env.int('CACHE_DEFAULT_TIMEOUT', default=300),
+        },
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'cubelogs-local-cache',
         },
     }
 
@@ -259,19 +294,73 @@ TEMPLATES = [
 # ------------------------------------------------------------------------------
 # Connection settings for relational database engines.
 # ------------------------------------------------------------------------------
+def _build_database_config():
+    """Build primary database settings from DB_* vars (or legacy DATABASE_URL)."""
+    from django.core.exceptions import ImproperlyConfigured
+
+    if is_testing and env.bool('USE_SQLITE_FOR_TESTS', default=False):
+        return {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'test_db.sqlite3',
+            'OPTIONS': {'timeout': 20},
+        }
+
+    db_engine = env('DB_ENGINE', default='').strip()
+    db_name = env('DB_NAME', default='').strip()
+    database_url = env('DATABASE_URL', default='').strip()
+
+    if db_engine or db_name:
+        config = {
+            'ENGINE': db_engine or 'django.db.backends.postgresql',
+            'NAME': db_name or 'cubelogs_db',
+            'USER': env('DB_USER', default=''),
+            'PASSWORD': env('DB_PASSWORD', default=''),
+            'HOST': env('DB_HOST', default='localhost'),
+            'PORT': env('DB_PORT', default='5432'),
+        }
+    elif database_url:
+        config = env.db('DATABASE_URL')
+    else:
+        raise ImproperlyConfigured(
+            "Database is not configured. Set DB_ENGINE/DB_NAME (or DATABASE_URL) in .env."
+        )
+
+    config['CONN_MAX_AGE'] = env.int('DB_CONN_MAX_AGE', default=60)
+    config['CONN_HEALTH_CHECKS'] = env.bool('DB_CONN_HEALTH_CHECKS', default=True)
+    config['ATOMIC_REQUESTS'] = False
+
+    engine = config.get('ENGINE', '')
+    if 'postgresql' in engine or 'postgis' in engine:
+        pg_options = dict(config.get('OPTIONS', {}))
+        pg_options.setdefault('connect_timeout', env.int('DB_CONNECT_TIMEOUT', default=10))
+        db_sslmode = env('DB_SSLMODE', default='').strip()
+        if db_sslmode:
+            pg_options['sslmode'] = db_sslmode
+        statement_timeout_ms = env.int('DB_STATEMENT_TIMEOUT_MS', default=0)
+        if statement_timeout_ms > 0:
+            pg_options['options'] = f'-c statement_timeout={statement_timeout_ms}'
+        config['OPTIONS'] = pg_options
+    elif engine == 'django.db.backends.sqlite3':
+        sqlite_override = env('SQLITE_DATABASE_PATH', default='').strip()
+        db_path = sqlite_override or str(config.get('NAME', ''))
+        if db_path and db_path != ':memory:' and not os.path.isabs(db_path):
+            config['NAME'] = str(BASE_DIR / db_path)
+        elif sqlite_override:
+            config['NAME'] = sqlite_override
+        config.setdefault('OPTIONS', {})['timeout'] = 20
+
+    if not is_dev and not is_testing and engine == 'django.db.backends.sqlite3':
+        raise ImproperlyConfigured(
+            "Production environment detected (ENVIRONMENT != 'development'), but database is configured for SQLite. "
+            "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
+        )
+
+    return config
+
+
 DATABASES = {
-    'default': env.db('DATABASE_URL')
+    'default': _build_database_config()
 }
-
-if DATABASES['default'].get('ENGINE') == 'django.db.backends.sqlite3':
-    DATABASES['default'].setdefault('OPTIONS', {})['timeout'] = 20
-
-# if not is_dev and DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3':
-#     from django.core.exceptions import ImproperlyConfigured
-#     raise ImproperlyConfigured(
-#         "Production environment detected (ENVIRONMENT != 'development'), but DATABASE_URL is configured for SQLite. "
-#         "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
-#     )
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -347,10 +436,10 @@ CSRF_COOKIE_SECURE = not is_dev       # True in production (HTTPS only)
 # Configures JSON Web Token lifetime scopes, refresh limits, and algorithms.
 # ------------------------------------------------------------------------------
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
-    'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': True,
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=env.int('JWT_ACCESS_MINUTES', default=30)),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=env.int('JWT_REFRESH_DAYS', default=30)),
+    'ROTATE_REFRESH_TOKENS': env.bool('ROTATE_REFRESH_TOKENS', default=True),
+    'BLACKLIST_AFTER_ROTATION': env.bool('BLACKLIST_AFTER_ROTATION', default=True),
     'UPDATE_LAST_LOGIN': False,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
@@ -377,7 +466,7 @@ SIMPLE_JWT = {
 # Configures language mappings, local timezone boundaries, and localization.
 # ------------------------------------------------------------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = env('DJANGO_TIME_ZONE', default='').strip() or env('TIME_ZONE', default='UTC').strip()
 USE_I18N = True
 USE_TZ = True
 
@@ -387,16 +476,27 @@ USE_TZ = True
 # ------------------------------------------------------------------------------
 # Physical folder definitions and URLs for serving system assets and files.
 # ------------------------------------------------------------------------------
-STATIC_URL = 'static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STATICFILES_DIRS = [os.path.join(BASE_DIR, 'static')]
+STATIC_URL = env('STATIC_URL', default='static/')
+STATIC_ROOT = Path(env('STATIC_ROOT', default='').strip() or BASE_DIR / 'staticfiles')
+STATICFILES_DIRS = [BASE_DIR / 'static'] if (BASE_DIR / 'static').exists() else []
 
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
-PRIVATE_MEDIA_ROOT = BASE_DIR / 'private_media'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': (
+            'whitenoise.storage.CompressedStaticFilesStorage'
+            if not is_dev and not is_testing
+            else 'django.contrib.staticfiles.storage.StaticFilesStorage'
+        ),
+    },
+}
 
-import sys, tempfile
-is_testing = 'test' in sys.argv or 'pytest' in sys.modules
+MEDIA_URL = env('MEDIA_URL', default='/media/')
+MEDIA_ROOT = Path(env('MEDIA_ROOT', default='').strip() or BASE_DIR / 'media')
+PRIVATE_MEDIA_ROOT = Path(env('PRIVATE_MEDIA_ROOT', default='').strip() or BASE_DIR / 'private_media')
+
 if is_testing:
     _test_media_dir = Path(tempfile.mkdtemp(prefix='cubelogs_test_media_'))
     MEDIA_ROOT = _test_media_dir / 'media'
@@ -408,14 +508,26 @@ if is_testing:
 # ------------------------------------------------------------------------------
 # Background broker targets, beat recurrence schedules, and queues.
 # ------------------------------------------------------------------------------
-CELERY_BROKER_URL = 'memory://' if is_testing else env('CELERY_BROKER_URL')
-CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='django-db')
+if is_testing:
+    os.environ['CELERY_BROKER_URL'] = 'memory://'
+    os.environ['CELERY_RESULT_BACKEND'] = 'django-db'
+
+CELERY_BROKER_URL = 'memory://' if is_testing else env('CELERY_BROKER_URL', default=REDIS_URL or 'redis://127.0.0.1:6379/0')
+CELERY_RESULT_BACKEND = 'django-db' if is_testing else env('CELERY_RESULT_BACKEND', default='redis://127.0.0.1:6379/1')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_TASK_ALWAYS_EAGER = True if is_testing else env('CELERY_TASK_ALWAYS_EAGER', default=False)
-CELERY_TASK_STORE_EAGER_RESULT = True if is_testing else env('CELERY_TASK_STORE_EAGER_RESULT', default=True)
+CELERY_TASK_ALWAYS_EAGER = True if is_testing else env.bool('CELERY_TASK_ALWAYS_EAGER', default=False)
+CELERY_TASK_STORE_EAGER_RESULT = True if is_testing else env.bool('CELERY_TASK_STORE_EAGER_RESULT', default=True)
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_POOL_LIMIT = env.int('CELERY_BROKER_POOL_LIMIT', default=10)
+CELERY_TASK_ACKS_LATE = env.bool('CELERY_TASK_ACKS_LATE', default=True)
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = env.int('CELERY_WORKER_PREFETCH_MULTIPLIER', default=1)
+CELERY_RESULT_EXPIRES = env.int('CELERY_RESULT_EXPIRES', default=86400)
+CELERY_TASK_SOFT_TIME_LIMIT = env.int('CELERY_TASK_SOFT_TIME_LIMIT', default=300)
+CELERY_TASK_TIME_LIMIT = env.int('CELERY_TASK_TIME_LIMIT', default=360)
 
 ALLOW_MOCK_PAYMENTS = env('ALLOW_MOCK_PAYMENTS', cast=bool, default=False)
 TEST_MODE = False
@@ -493,16 +605,33 @@ LOGGING = {
 # ------------------------------------------------------------------------------
 if not is_dev:
     import re
+    from django.core.exceptions import ImproperlyConfigured
+
+    if DEBUG and not is_testing:
+        raise ImproperlyConfigured("DEBUG must be False when ENVIRONMENT is not 'development'.")
+    if (
+        not is_testing
+        and (
+            SECRET_KEY.startswith('cubelogs-development-secret-key')
+            or SECRET_KEY.startswith('change-me')
+            or SECRET_KEY.startswith('change-this')
+            or SECRET_KEY.startswith('django-insecure')
+        )
+    ):
+        raise ImproperlyConfigured("A secure production SECRET_KEY must be set when ENVIRONMENT is not 'development'.")
     if CORS_ALLOW_ALL_ORIGINS and CORS_ALLOW_CREDENTIALS:
-        from django.core.exceptions import ImproperlyConfigured
         raise ImproperlyConfigured("CORS_ALLOW_ALL_ORIGINS cannot be True when CORS_ALLOW_CREDENTIALS is True in production.")
+    if not REDIS_URL and not is_testing:
+        logging.getLogger(__name__).warning(
+            "REDIS_URL is not configured in production; falling back to in-memory cache and channel layers (not safe for multi-worker scaling)."
+        )
 
     CSRF_TRUSTED_ORIGINS = [origin for origin in CSRF_TRUSTED_ORIGINS if not re.search(r'localhost|127\.0\.0\.1|192\.168\.', origin)]
 
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = env.bool('SECURE_SSL_REDIRECT', default=True)
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     SECURE_BROWSER_XSS_FILTER = True
