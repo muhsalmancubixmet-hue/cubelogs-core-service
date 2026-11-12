@@ -230,8 +230,11 @@ ROOT_URLCONF = 'cubelogs.urls'
 WSGI_APPLICATION = 'cubelogs.wsgi.application'
 ASGI_APPLICATION = 'cubelogs.asgi.application'
 
+USE_REDIS_IN_DEV = env.bool('USE_REDIS_IN_DEV', default=False)
 REDIS_URL = env('REDIS_URL', default='').strip() or None
-if REDIS_URL:
+_use_redis = bool(REDIS_URL) and not is_testing and (not is_dev or USE_REDIS_IN_DEV)
+
+if _use_redis:
     CHANNEL_LAYERS = {
         'default': {
             'BACKEND': 'channels_redis.core.RedisChannelLayer',
@@ -250,7 +253,7 @@ else:
     }
 
 CACHE_URL = env('CACHE_URL', default='').strip() or REDIS_URL
-if CACHE_URL and not is_testing:
+if CACHE_URL and not is_testing and (not is_dev or USE_REDIS_IN_DEV):
     CACHES = {
         'default': {
             'BACKEND': 'django.core.cache.backends.redis.RedisCache',
@@ -294,25 +297,45 @@ TEMPLATES = [
 # ------------------------------------------------------------------------------
 # Connection settings for relational database engines.
 # ------------------------------------------------------------------------------
+def _build_sqlite_config():
+    """Return SQLite database configuration for local development and tests."""
+    sqlite_override = env('SQLITE_DATABASE_PATH', default='').strip()
+    db_path = sqlite_override or env('SQLITE_DB_NAME', default='db.sqlite3').strip() or 'db.sqlite3'
+    if db_path != ':memory:' and not os.path.isabs(db_path):
+        db_path = str(BASE_DIR / db_path)
+    return {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': db_path,
+        'CONN_MAX_AGE': 0,
+        'ATOMIC_REQUESTS': False,
+        'OPTIONS': {'timeout': 20},
+    }
+
+
 def _build_database_config():
-    """Build primary database settings from DB_* vars (or legacy DATABASE_URL)."""
+    """Select SQLite when ENVIRONMENT=development, or PostgreSQL in production."""
     from django.core.exceptions import ImproperlyConfigured
 
     if is_testing and env.bool('USE_SQLITE_FOR_TESTS', default=False):
         return {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'test_db.sqlite3',
+            'CONN_MAX_AGE': 0,
+            'ATOMIC_REQUESTS': False,
             'OPTIONS': {'timeout': 20},
         }
 
-    db_engine = env('DB_ENGINE', default='').strip()
+    if is_dev:
+        return _build_sqlite_config()
+
+    # Production / non-development environments require PostgreSQL
     db_name = env('DB_NAME', default='').strip()
     database_url = env('DATABASE_URL', default='').strip()
 
-    if db_engine or db_name:
+    if db_name:
         config = {
-            'ENGINE': db_engine or 'django.db.backends.postgresql',
-            'NAME': db_name or 'cubelogs_db',
+            'ENGINE': env('DB_ENGINE', default='django.db.backends.postgresql').strip() or 'django.db.backends.postgresql',
+            'NAME': db_name,
             'USER': env('DB_USER', default=''),
             'PASSWORD': env('DB_PASSWORD', default=''),
             'HOST': env('DB_HOST', default='localhost'),
@@ -322,17 +345,20 @@ def _build_database_config():
         config = env.db('DATABASE_URL')
     else:
         raise ImproperlyConfigured(
-            "Database is not configured. Set DB_ENGINE/DB_NAME (or DATABASE_URL) in .env."
+            "Production database is not configured. Set DB_NAME/DB_USER/DB_PASSWORD/DB_HOST (or DATABASE_URL) in .env."
         )
 
+    engine = config.get('ENGINE', '')
+    if not is_testing and engine == 'django.db.backends.sqlite3':
+        raise ImproperlyConfigured(
+            "Production environment detected (ENVIRONMENT != 'development'), but database is configured for SQLite. "
+            "PostgreSQL (django.db.backends.postgresql) is required for production deployment."
+        )
+
+    config['CONN_MAX_AGE'] = env.int('DB_CONN_MAX_AGE', default=60)
     config['CONN_HEALTH_CHECKS'] = env.bool('DB_CONN_HEALTH_CHECKS', default=True)
     config['ATOMIC_REQUESTS'] = False
 
-    engine = config.get('ENGINE', '')
-    config['CONN_MAX_AGE'] = env.int(
-        'DB_CONN_MAX_AGE',
-        default=0 if engine == 'django.db.backends.sqlite3' else 60,
-    )
     if 'postgresql' in engine or 'postgis' in engine:
         pg_options = dict(config.get('OPTIONS', {}))
         pg_options.setdefault('connect_timeout', env.int('DB_CONNECT_TIMEOUT', default=10))
@@ -343,22 +369,6 @@ def _build_database_config():
         if statement_timeout_ms > 0:
             pg_options['options'] = f'-c statement_timeout={statement_timeout_ms}'
         config['OPTIONS'] = pg_options
-    elif engine == 'django.db.backends.sqlite3':
-        sqlite_override = env('SQLITE_DATABASE_PATH', default='').strip()
-        db_path = sqlite_override or str(config.get('NAME', ''))
-        if db_path and db_path != ':memory:' and not os.path.isabs(db_path):
-            config['NAME'] = str(BASE_DIR / db_path)
-        elif sqlite_override:
-            config['NAME'] = sqlite_override
-        config.setdefault('OPTIONS', {})['timeout'] = 20
-
-    allow_sqlite_in_prod = env.bool('ALLOW_SQLITE_IN_PRODUCTION', default=False)
-    if not is_dev and not is_testing and engine == 'django.db.backends.sqlite3' and not allow_sqlite_in_prod:
-        raise ImproperlyConfigured(
-            "Production environment detected (ENVIRONMENT != 'development'), but database is configured for SQLite. "
-            "PostgreSQL (django.db.backends.postgresql) is required for production deployment "
-            "(or set ALLOW_SQLITE_IN_PRODUCTION=True temporarily)."
-        )
 
     return config
 
@@ -519,17 +529,22 @@ if is_testing:
 # ------------------------------------------------------------------------------
 # Background broker targets, beat recurrence schedules, and queues.
 # ------------------------------------------------------------------------------
-if is_testing:
+_use_dev_celery = is_testing or (is_dev and not USE_REDIS_IN_DEV)
+if _use_dev_celery:
     os.environ['CELERY_BROKER_URL'] = 'memory://'
     os.environ['CELERY_RESULT_BACKEND'] = 'django-db'
 
-CELERY_BROKER_URL = 'memory://' if is_testing else env('CELERY_BROKER_URL', default=REDIS_URL or 'redis://127.0.0.1:6379/0')
-CELERY_RESULT_BACKEND = 'django-db' if is_testing else env('CELERY_RESULT_BACKEND', default='redis://127.0.0.1:6379/1')
+CELERY_BROKER_URL = 'memory://' if _use_dev_celery else env('CELERY_BROKER_URL', default=REDIS_URL or 'redis://127.0.0.1:6379/0')
+CELERY_RESULT_BACKEND = 'django-db' if _use_dev_celery else env('CELERY_RESULT_BACKEND', default='redis://127.0.0.1:6379/1')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_TASK_ALWAYS_EAGER = True if is_testing else env.bool('CELERY_TASK_ALWAYS_EAGER', default=False)
+CELERY_TASK_ALWAYS_EAGER = (
+    True
+    if is_testing
+    else (env.bool('CELERY_TASK_ALWAYS_EAGER_DEV', default=True) if is_dev and not USE_REDIS_IN_DEV else env.bool('CELERY_TASK_ALWAYS_EAGER', default=False))
+)
 CELERY_TASK_STORE_EAGER_RESULT = True if is_testing else env.bool('CELERY_TASK_STORE_EAGER_RESULT', default=True)
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_POOL_LIMIT = env.int('CELERY_BROKER_POOL_LIMIT', default=10)
