@@ -1838,10 +1838,27 @@ class ProjectAttachmentViewSet(ActionPermissionMixin, viewsets.ModelViewSet):
         attachment = self.get_object()
         from django.http import FileResponse
         import mimetypes
+        import os
         mime, _ = mimetypes.guess_type(attachment.file_name)
         content_type = mime or 'application/octet-stream'
-        
-        response = FileResponse(attachment.file.open('rb'), content_type=content_type)
+
+        try:
+            if not attachment.file:
+                return Response({'detail': 'Attachment file not configured.'}, status=status.HTTP_404_NOT_FOUND)
+            if not attachment.file.storage.exists(attachment.file.name):
+                # Fallback: check if the original file_name exists in the same directory
+                dir_name = os.path.dirname(attachment.file.name)
+                candidate = os.path.join(dir_name, attachment.file_name).replace('\\', '/')
+                if attachment.file.storage.exists(candidate):
+                    file_handle = attachment.file.storage.open(candidate, 'rb')
+                else:
+                    return Response({'detail': 'Attachment file not found on storage.'}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                file_handle = attachment.file.open('rb')
+        except (FileNotFoundError, OSError, ValueError):
+            return Response({'detail': 'Attachment file not found on storage.'}, status=status.HTTP_404_NOT_FOUND)
+
+        response = FileResponse(file_handle, content_type=content_type)
         response['Content-Disposition'] = f'attachment; filename="{attachment.file_name}"'
         response['X-Content-Type-Options'] = 'nosniff'
         return response

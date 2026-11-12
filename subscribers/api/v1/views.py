@@ -1254,18 +1254,307 @@ class BackofficeOrganizationListView(APIView):
 
     def get(self, request):
         user = request.user
-        if not getattr(user, 'isSuperAdmin', False) or user.organization is not None:
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
             return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
 
-        orgs = Organization.objects.all().order_by('name')
+        from users.models import OrganizationMembership, Employee
+        orgs = Organization.objects.all().select_related('settings').order_by('-id')
         org_list = []
         for org in orgs:
+            settings = getattr(org, 'settings', None)
+            modules = []
+            if settings:
+                if settings.is_attendance_enabled:
+                    modules.append('Attendance Management')
+                if settings.is_project_enabled:
+                    modules.append('Project & Tasks Management')
+            modules_str = ', '.join(modules) if modules else 'Core Package'
+
+            mems = OrganizationMembership.objects.filter(organization=org)
+            if not org.is_deleted:
+                mems = mems.filter(is_deleted=False)
+            members_count = mems.count()
+
+            owner_mem = mems.filter(user__isSuperAdmin=True).select_related('user').first() or mems.select_related('user').first()
+            owner_email = owner_mem.user.email if (owner_mem and owner_mem.user) else ''
+            owner_name = f"{owner_mem.user.first_name} {owner_mem.user.last_name}".strip() or getattr(owner_mem.user, 'username', '') if (owner_mem and owner_mem.user) else ''
+
+            if not owner_email:
+                direct_emp = Employee.objects.filter(organization=org).first()
+                if direct_emp:
+                    owner_email = direct_emp.email
+                    owner_name = f"{direct_emp.first_name} {direct_emp.last_name}".strip() or direct_emp.username
+                    if members_count == 0:
+                        members_count = 1
+
+            created_at_val = org.created_at.strftime('%Y-%m-%d %H:%M') if org.created_at else ''
+            expires_at_val = settings.subscriptionExpiresAt.strftime('%Y-%m-%d') if (settings and settings.subscriptionExpiresAt) else 'Lifetime'
+            if org.is_deleted:
+                status_val = 'Deleted'
+            else:
+                status_val = settings.subscriptionStatus if settings else 'Active'
+            subscription_days = settings.subscriptionDays if settings else 0
+
             org_list.append({
                 'id': org.id,
                 'name': org.name,
-                'subdomain': org.subdomain,
+                'subdomain': org.subdomain or '',
+                'owner_email': owner_email or '—',
+                'owner_name': owner_name or '—',
+                'modules': modules_str,
+                'members_count': members_count,
+                'status': status_val,
+                'is_deleted': org.is_deleted,
+                'expires_at': expires_at_val,
+                'subscription_days': subscription_days,
+                'created_at': created_at_val,
             })
         return Response(org_list, status=status.HTTP_200_OK)
+
+
+def purge_organization_cascade(org):
+    """
+    Safely and permanently purges an organization and all its dependent resources
+    across all modules in reverse dependency order to prevent ProtectedError.
+    """
+    # 1. Storage Billing
+    try:
+        from storage_billing.models import StorageEvent, StorageFile, StorageDailyUsage
+        StorageEvent.objects.filter(organization=org).delete()
+        StorageFile.objects.filter(organization=org).delete()
+        StorageDailyUsage.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Storage cleanup: {e}")
+
+    # 2. Payroll
+    try:
+        from payroll.models import (
+            SalaryPayment, Payslip, PayrollAdjustment, PayrollPeriod,
+            EmployeeSalaryStructure, EmployeeSalaryComponent, SalaryComponent
+        )
+        SalaryPayment.objects.filter(organization=org).delete()
+        Payslip.objects.filter(organization=org).delete()
+        PayrollAdjustment.objects.filter(organization=org).delete()
+        PayrollPeriod.objects.filter(organization=org).delete()
+        EmployeeSalaryComponent.objects.filter(salary_structure__organization=org).delete()
+        EmployeeSalaryStructure.objects.filter(organization=org).delete()
+        SalaryComponent.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Payroll cleanup: {e}")
+
+    # 3. Attendance
+    try:
+        from attendance.models import (
+            AttendancePeriodEmployeeSnapshot, AttendancePeriod,
+            AttendanceLog, Leave, LeaveType,
+            Holiday, OfficeLocation, Schedule, AttendancePolicy
+        )
+        AttendancePeriodEmployeeSnapshot.objects.filter(attendance_period__organization=org).delete()
+        AttendancePeriod.objects.filter(organization=org).delete()
+        AttendanceLog.objects.filter(employee__organization=org).delete()
+        Leave.objects.filter(employee__organization=org).delete()
+        LeaveType.objects.filter(organization=org).delete()
+        Holiday.objects.filter(organization=org).delete()
+        OfficeLocation.objects.filter(organization=org).delete()
+        Schedule.objects.filter(organization=org).delete()
+        AttendancePolicy.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Attendance cleanup: {e}")
+
+    # 4. Projects (bottom-up deletion to avoid circular status protection)
+    try:
+        from projects.models import (
+            ProjectComment, ProjectAttachment, ProjectActivity, ProjectSubtask,
+            ProjectTask, ProjectStoryMember, ProjectStory, ProjectSprintEvent,
+            ProjectSprint, ProjectRetrospectiveItem, ProjectRetrospective,
+            ProjectMember, Project, ProjectEpic, ProjectStatusOption
+        )
+        ProjectComment.objects.filter(story__project__company=org).delete()
+        ProjectComment.objects.filter(task__story__project__company=org).delete()
+        ProjectComment.objects.filter(subtask__task__story__project__company=org).delete()
+        ProjectComment.objects.filter(epic__company=org).delete()
+        ProjectAttachment.objects.filter(company=org).delete()
+        ProjectAttachment.objects.filter(project__company=org).delete()
+        ProjectAttachment.objects.filter(epic__company=org).delete()
+        ProjectAttachment.objects.filter(story__project__company=org).delete()
+        ProjectAttachment.objects.filter(task__story__project__company=org).delete()
+        ProjectActivity.objects.filter(project__company=org).delete()
+        ProjectSubtask.objects.filter(task__story__project__company=org).delete()
+        ProjectTask.objects.filter(story__project__company=org).delete()
+        ProjectStoryMember.objects.filter(story__project__company=org).delete()
+        ProjectStory.objects.filter(project__company=org).delete()
+        ProjectSprintEvent.objects.filter(sprint__project__company=org).delete()
+        ProjectSprint.objects.filter(project__company=org).delete()
+        ProjectRetrospectiveItem.objects.filter(retrospective__project__company=org).delete()
+        ProjectRetrospective.objects.filter(project__company=org).delete()
+        ProjectMember.objects.filter(project__company=org).delete()
+        Project.objects.filter(company=org).delete()
+        ProjectEpic.objects.filter(company=org).delete()
+        ProjectStatusOption.objects.filter(company=org).delete()
+    except Exception as e:
+        logger.warning(f"Projects cleanup: {e}")
+
+    # 5. Wallets & Invoices
+    try:
+        from subscribers.models import Wallet, WalletTransaction, MonthlyInvoice
+        WalletTransaction.objects.filter(wallet__organization=org).delete()
+        Wallet.objects.filter(organization=org).delete()
+        MonthlyInvoice.objects.filter(organization=org).delete()
+    except Exception as e:
+        logger.warning(f"Wallets cleanup: {e}")
+
+    # 6. Users & Memberships
+    try:
+        from users.models import (
+            EmployeeProfile, OrganizationMembership, Role, Template, Employee
+        )
+        EmployeeProfile.objects.filter(organization=org).delete()
+        OrganizationMembership.objects.filter(organization=org).delete()
+        Role.objects.filter(organization=org).delete()
+        Template.objects.filter(organization=org).delete()
+        Employee.objects.filter(organization=org).update(organization=None)
+    except Exception as e:
+        logger.warning(f"Users cleanup: {e}")
+
+    # 7. Core Modules & Settings
+    try:
+        from core.models import OrganizationModule, AuditLog
+        OrganizationModule.objects.filter(organization=org).delete()
+        AuditLog.objects.filter(organization=org).delete()
+        if getattr(org, 'settings', None):
+            try:
+                org.settings.delete()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Core cleanup: {e}")
+
+    # 8. Delete organization permanently
+    org.hard_delete()
+
+
+class BackofficeOrganizationDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        user = request.user
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from users.models import OrganizationMembership, Employee
+        org = Organization.objects.filter(id=pk).select_related('settings').first()
+        if not org:
+            return Response({'error': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        settings = getattr(org, 'settings', None)
+        modules = []
+        if settings:
+            if settings.is_attendance_enabled:
+                modules.append('Attendance Management')
+            if settings.is_project_enabled:
+                modules.append('Project & Tasks Management')
+
+        mems = OrganizationMembership.objects.filter(organization=org).select_related('user', 'role')
+        if not org.is_deleted:
+            mems = mems.filter(is_deleted=False)
+        members_data = []
+        seen_user_ids = set()
+        for m in mems:
+            if m.user:
+                seen_user_ids.add(m.user.id)
+                members_data.append({
+                    'membership_id': m.id,
+                    'user_id': m.user.id,
+                    'email': m.user.email,
+                    'name': f"{m.user.first_name} {m.user.last_name}".strip() or m.user.username,
+                    'role': m.role.name if m.role else ('Super Admin' if m.user.isSuperAdmin else 'Employee'),
+                    'designation': m.designation or m.user.designation or '—',
+                    'department': m.department or '—',
+                    'is_active_in_org': m.is_active_in_org,
+                    'is_superadmin': getattr(m.user, 'isSuperAdmin', False),
+                })
+
+        direct_emps = Employee.objects.filter(organization=org).exclude(id__in=seen_user_ids)
+        for emp in direct_emps:
+            members_data.append({
+                'membership_id': None,
+                'user_id': emp.id,
+                'email': emp.email,
+                'name': f"{emp.first_name} {emp.last_name}".strip() or emp.username,
+                'role': 'Super Admin' if emp.isSuperAdmin else 'Employee',
+                'designation': emp.designation or '—',
+                'department': '—',
+                'is_active_in_org': emp.is_active,
+                'is_superadmin': emp.isSuperAdmin,
+            })
+
+        detail = {
+            'id': org.id,
+            'name': org.name,
+            'subdomain': org.subdomain or '',
+            'created_at': org.created_at.strftime('%Y-%m-%d %H:%M:%S') if org.created_at else '—',
+            'subscription_status': 'Deleted' if org.is_deleted else (settings.subscriptionStatus if settings else 'Active'),
+            'is_deleted': org.is_deleted,
+            'subscription_days': settings.subscriptionDays if settings else 0,
+            'subscription_expires_at': settings.subscriptionExpiresAt.strftime('%Y-%m-%d') if (settings and settings.subscriptionExpiresAt) else 'Lifetime',
+            'max_employees': settings.max_employees_allowed if settings else 10,
+            'active_modules': modules if modules else ['Core Package'],
+            'company_email': getattr(settings, 'company_email', '') or '—',
+            'company_phone': getattr(settings, 'company_phone', '') or '—',
+            'company_address': getattr(settings, 'company_address', '') or '—',
+            'company_tax_id': getattr(settings, 'company_tax_id', '') or '—',
+            'members': members_data,
+            'total_members': len(members_data),
+        }
+        return Response(detail, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        user = request.user
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from django.db import transaction
+        org = Organization.objects.filter(id=pk).first()
+        if not org:
+            return Response({'error': 'Organization not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        org_name = org.name
+
+        try:
+            with transaction.atomic():
+                purge_organization_cascade(org)
+            return Response({'success': True, 'message': f'Company "{org_name}" has been permanently removed.'}, status=status.HTTP_200_OK)
+        except Exception as err:
+            logger.exception(f"Failed to delete organization {pk}: {err}")
+            return Response({'error': f'Failed to delete company: {str(err)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BackofficeOrganizationMemberRemoveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, org_id, membership_id):
+        user = request.user
+        if not (getattr(user, 'isSuperAdmin', False) or getattr(user, 'is_superuser', False)):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from users.models import OrganizationMembership, Employee
+        mem = OrganizationMembership.objects.filter(id=membership_id, organization_id=org_id).first()
+        if not mem:
+            return Response({'error': 'Membership not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        mem_user = mem.user
+        mem_email = mem_user.email if mem_user else 'User'
+        mem.delete()
+
+        # If user has direct organization field set to this org, unbind it or set to remaining membership
+        if mem_user and mem_user.organization_id == org_id:
+            other_mem = OrganizationMembership.objects.filter(user=mem_user, is_active_in_org=True).first()
+            if other_mem:
+                Employee.objects.filter(id=mem_user.id).update(organization_id=other_mem.organization_id)
+            else:
+                Employee.objects.filter(id=mem_user.id).update(organization=None)
+
+        return Response({'success': True, 'message': f'Member {mem_email} removed from company.'}, status=status.HTTP_200_OK)
 
 
 # --------------------------------------------------------------------------------

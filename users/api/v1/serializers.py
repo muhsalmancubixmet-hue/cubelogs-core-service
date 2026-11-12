@@ -376,30 +376,32 @@ class EmployeeSerializer(serializers.ModelSerializer):
             is_attendance_enabled = org.settings.is_attendance_enabled
             is_project_enabled = org.settings.is_project_enabled
             max_employees_allowed = org.settings.max_employees_allowed
-            if org.settings.subscriptionExpiresAt:
-                subscription_expires_at = org.settings.subscriptionExpiresAt
-                delta = org.settings.subscriptionExpiresAt - timezone.now()
-                seconds_remaining = max(0, int(delta.total_seconds()))
-                days_remaining = max(0, delta.days)
-                if delta.total_seconds() <= 0:
-                    is_expired = True
-                    # Compute access locked date: lock_day of the current or next month
-                    import calendar as cal_mod
-                    now_local = timezone.now()
-                    lock_month = now_local.month if now_local.day < lock_day else now_local.month + 1
-                    lock_year = now_local.year if lock_month <= 12 else now_local.year + 1
-                    lock_month = lock_month if lock_month <= 12 else 1
-                    max_day = cal_mod.monthrange(lock_year, lock_month)[1]
-                    lock_day_clamped = min(lock_day, max_day)
-                    from datetime import datetime, timezone as dt_timezone
-                    lock_dt = datetime(lock_year, lock_month, lock_day_clamped, tzinfo=dt_timezone.utc)
-                    access_locked_date = lock_dt.date().isoformat()
-                    lock_delta = lock_dt - timezone.now()
-                    days_remaining = max(0, lock_delta.days)
-                if 0 < seconds_remaining <= 300:
-                    warning_active = True
+            org_status = getattr(org.settings, 'subscriptionStatus', 'Active') or 'Active'
+
+            if org_status != 'Active':
+                # Subscription is in Pending Payment, Past Due, or Restricted state
+                is_expired = True
+                import calendar as cal_mod
+                now_local = timezone.now()
+                lock_month = now_local.month if now_local.day < lock_day else now_local.month + 1
+                lock_year = now_local.year if lock_month <= 12 else now_local.year + 1
+                lock_month = lock_month if lock_month <= 12 else 1
+                max_day = cal_mod.monthrange(lock_year, lock_month)[1]
+                lock_day_clamped = min(lock_day, max_day)
+                from datetime import datetime, timezone as dt_timezone
+                lock_dt = datetime(lock_year, lock_month, lock_day_clamped, tzinfo=dt_timezone.utc)
+                access_locked_date = lock_dt.date().isoformat()
+                lock_delta = lock_dt - timezone.now()
+                days_remaining = max(0, lock_delta.days)
+                subscription_expires_at = lock_dt
             else:
-                days_remaining = org.settings.subscriptionDays
+                # Active healthy monthly subscription
+                is_expired = False
+                warning_active = False
+                import calendar as cal_mod
+                now_local = timezone.now()
+                days_in_month = cal_mod.monthrange(now_local.year, now_local.month)[1]
+                days_remaining = max(1, days_in_month - now_local.day)
         else:
             settings_obj = OrgSettings.objects.filter(id=1).first()
             if settings_obj:

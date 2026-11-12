@@ -435,11 +435,16 @@ CSRF_COOKIE_SECURE = not is_dev       # True in production (HTTPS only)
 # ------------------------------------------------------------------------------
 # Configures JSON Web Token lifetime scopes, refresh limits, and algorithms.
 # ------------------------------------------------------------------------------
+_jwt_access_minutes = env.int('JWT_ACCESS_MINUTES', default=0)
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=env.int('JWT_ACCESS_MINUTES', default=30)),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=env.int('JWT_REFRESH_DAYS', default=30)),
-    'ROTATE_REFRESH_TOKENS': env.bool('ROTATE_REFRESH_TOKENS', default=True),
-    'BLACKLIST_AFTER_ROTATION': env.bool('BLACKLIST_AFTER_ROTATION', default=True),
+    'ACCESS_TOKEN_LIFETIME': (
+        timedelta(minutes=_jwt_access_minutes)
+        if _jwt_access_minutes > 0
+        else timedelta(days=env.int('JWT_ACCESS_DAYS', default=7))
+    ),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=env.int('JWT_REFRESH_DAYS', default=60)),
+    'ROTATE_REFRESH_TOKENS': env.bool('ROTATE_REFRESH_TOKENS', default=False),
+    'BLACKLIST_AFTER_ROTATION': env.bool('BLACKLIST_AFTER_ROTATION', default=False),
     'UPDATE_LAST_LOGIN': False,
     'ALGORITHM': 'HS256',
     'SIGNING_KEY': SECRET_KEY,
@@ -466,7 +471,8 @@ SIMPLE_JWT = {
 # Configures language mappings, local timezone boundaries, and localization.
 # ------------------------------------------------------------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = env('DJANGO_TIME_ZONE', default='').strip() or env('TIME_ZONE', default='UTC').strip()
+TIME_ZONE = env('DJANGO_TIME_ZONE', default='').strip() or env('TIME_ZONE', default='Asia/Kolkata').strip()
+USE_I18N = True
 USE_I18N = True
 USE_TZ = True
 
